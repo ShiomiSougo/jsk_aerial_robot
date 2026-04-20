@@ -144,6 +144,33 @@ if __name__=="__main__":
                                 nav_msg.target_vel_z = -z_vel
                                 nav_pub.publish(nav_msg)
                                 msg = "send -z vel command"
+                        if key == 'c':
+                                msg = "draw cross"
+
+                                def move(vx=0, vy=0, vz=0, duration=1.0):
+                                        nav_msg = FlightNav()
+                                        nav_msg.control_frame = FlightNav.WORLD_FRAME
+                                        nav_msg.target = FlightNav.COG
+                                        nav_msg.pos_xy_nav_mode = FlightNav.VEL_MODE
+                                        nav_msg.pos_z_nav_mode = FlightNav.VEL_MODE
+
+                                        nav_msg.target_vel_x = vx
+                                        nav_msg.target_vel_y = vy
+                                        nav_msg.target_vel_z = vz
+
+                                        start_time = rospy.Time.now()
+                                        while (rospy.Time.now() - start_time).to_sec() < duration:
+                                        nav_pub.publish(nav_msg)
+                                        rospy.sleep(0.05)
+
+                                # --- 十字を書く ---
+                                move(vx= xy_vel, duration=1.0)   # → 右
+                                move(vx=-xy_vel, duration=1.0)   # ← 左（中心通過）
+                                move(vx= xy_vel, duration=1.0)   # → 中央戻る
+
+                                move(vy= xy_vel, duration=1.0)   # ↑ 前
+                                move(vy=-xy_vel, duration=1.0)   # ↓ 後（中心通過）
+                                move(vy= xy_vel, duration=1.0)   # ↑ 中央戻る
                         if key == '\x03':
                                 break
 
