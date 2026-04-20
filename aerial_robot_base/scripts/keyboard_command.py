@@ -30,7 +30,7 @@ h:  halt (force stop motor)
 
 
 Please don't have caps lock on.
-CTRL+c to quit
+CTRL+c to quit!
 ---------------------------
 """
 
