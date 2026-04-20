@@ -164,13 +164,13 @@ if __name__=="__main__":
                                                 rospy.sleep(0.05)
 
                                         # --- 十字を書く ---
-                                                move(vx= xy_vel, duration=1.0)   # → 右
-                                                move(vx=-xy_vel, duration=1.0)   # ← 左（中心通過）
-                                                move(vx= xy_vel, duration=1.0)   # → 中央戻る
+                                move(vx= xy_vel, duration=1.0)   # → 右
+                                move(vx=-xy_vel, duration=1.0)   # ← 左（中心通過）
+                                move(vx= xy_vel, duration=1.0)   # → 中央戻る
 
-                                                move(vy= xy_vel, duration=1.0)   # ↑ 前
-                                                move(vy=-xy_vel, duration=1.0)   # ↓ 後（中心通過）
-                                                move(vy= xy_vel, duration=1.0)   # ↑ 中央戻る
+                                move(vy= xy_vel, duration=1.0)   # ↑ 前
+                                move(vy=-xy_vel, duration=1.0)   # ↓ 後（中心通過）
+                                move(vy= xy_vel, duration=1.0)   # ↑ 中央戻る
                         if key == '\x03':
                                 break
 
