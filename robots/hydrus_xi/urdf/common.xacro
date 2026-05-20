@@ -47,7 +47,10 @@
   </xacro:macro>
 
 #<<<<<<< Updated upstream
+#<<<<<<< Updated upstream
 #=======
+#=======
+#>>>>>>> Stashed changes
   <!--   <joint name="joint_eff" type="fixed"> -->
   <!--     <parent link="link4"/> -->
   <!--     <child link="end_effector"/> -->
@@ -135,6 +138,9 @@
   <!--       </plugin> -->
   <!--   </sensor> -->
   <!-- </gazebo> -->
+
+#<<<<<<< Updated upstream
+#>>>>>>> Stashed changes
 
 #>>>>>>> Stashed changes
   <xacro:macro name="extra_module" params="name parent *origin *inertial visible:=0 model_url:=0">
