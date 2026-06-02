@@ -188,7 +188,7 @@ void HydrusXiUnderActuatedNavigator::initialize(ros::NodeHandle nh, ros::NodeHan
 {
   BaseNavigator::initialize(nh, nhp, robot_model, estimator, loop_du);
 
-  robot_model_for_plan = boost::make_shared<HydrusTiltedRobotModel>();
+  robot_model_for_plan_ = boost::make_shared<HydrusTiltedRobotModel>();
 
   rosParamInit();
 
