@@ -76,11 +76,16 @@ namespace aerial_robot_navigation
 
     void setMaxMinYaw(const double max_min_yaw) { max_min_yaw_ = max_min_yaw;}
 
-    // ===== 【新規追加】内部モーメント制御用パブリックアクセッサー =====
+    // ===== 【新規追加】内部モーメント制御用パブリックアクセッサー & メソッド =====
     inline int getTargetJointIndex() const { return target_joint_index_; }
     inline double getTauDesTarget() const { return tau_des_target_; }
     inline bool hasMomentCommand() const { return has_moment_command_; }
     inline double getTargetMomentWeight() const { return target_moment_weight_; }
+
+    // ★ エラー解消：外部の最適化関数からアクセスできるように public に移動
+    double computeInternalMomentZ(
+        const std::vector<double>& x,
+        const boost::shared_ptr<HydrusTiltedRobotModel>& robot_model_ptr);
 
   private:
     ros::Publisher gimbal_ctrl_pub_;
@@ -111,7 +116,7 @@ namespace aerial_robot_navigation
 
     void rosParamInit() override;
 
-    // ===== 【新規追加】内部モーメント制御用メンバ変数・メソッド =====
+    // ===== 【新規追加】内部モーメント制御用メンバ変数・内部メソッド =====
     int target_joint_index_;              // 対象関節インデックス (0=Joint1, 1=Joint2, 2=Joint3, -1=なし)
     double tau_des_target_;               // 目標内部モーメント [N⋅m]
     bool has_moment_command_;             // コマンド受信フラグ
@@ -121,10 +126,6 @@ namespace aerial_robot_navigation
 
     void momentCommandCallback(const std_msgs::Float64MultiArray::ConstPtr& msg);
     
-    double computeInternalMomentZ(
-        const std::vector<double>& x,
-        const boost::shared_ptr<HydrusTiltedRobotModel>& robot_model_ptr);
-        
     std::vector<double> extractThrustsFromOptVars(
         const std::vector<double>& x,
         const boost::shared_ptr<HydrusTiltedRobotModel>& robot_model_ptr);
