@@ -188,7 +188,7 @@ void HydrusXiUnderActuatedNavigator::initialize(ros::NodeHandle nh, ros::NodeHan
 {
   BaseNavigator::initialize(nh, nhp, robot_model, estimator, loop_du);
 
-  robot_model_for_plan_ = boost::make_shared<HydrusTiltedRobotModel>();
+  robot_model_for_plan = boost::make_shared<HydrusTiltedRobotModel>();
 
   rosParamInit();
 
@@ -443,7 +443,7 @@ void HydrusXiUnderActuatedNavigator::momentCommandCallback(
              target_joint_index_, tau_des_target_);
 }
 
-// ===== 【新規追加】内部モーメント計算（実装版） =====
+// ===== 【新規追加】内部モーメント計算（テンプレート型＆配列対応版） =====
 double HydrusXiUnderActuatedNavigator::computeInternalMomentZ(
     const std::vector<double>& x,
     const boost::shared_ptr<HydrusTiltedRobotModel>& robot_model_ptr)
@@ -453,28 +453,21 @@ double HydrusXiUnderActuatedNavigator::computeInternalMomentZ(
   }
 
   // ===== ステップ 1: 重心座標を取得 =====
-  Eigen::Vector3d cog_pos = robot_model_ptr->getCog();
+  // 解決：テンプレート引数 <Eigen::Vector3d> を明示的に指定
+  Eigen::Vector3d cog_pos = robot_model_ptr->getCog<Eigen::Vector3d>();
   
   // ===== ステップ 2: 対象関節位置を計算 =====
-  // 対象関節は、重心から見た相対位置で計算
-  // Robot Model API から得られる関節情報を活用
-  
-  Eigen::Vector3d joint_pos = cog_pos;  // 仮: 重心からのオフセットを計算する必要あり
-  
-  // TODO: 実際には以下のようなメソッドで取得
-  // const auto& segment_name = (target_joint_index_ == 0) ? "link1" : "link3";
-  // joint_pos = robot_model_ptr->getSegmentOrigin(segment_name);
+  Eigen::Vector3d joint_pos = cog_pos;  // 仮置き
 
   // ===== ステップ 3: 各ローターの位置と推力方向を取得 =====
-  
   std::vector<double> thrusts = extractThrustsFromOptVars(x, robot_model_ptr);
   std::vector<double> gimbals = extractGimbalsFromOptVars(x);
   
-  // ローター位置: 重心からの相対位置
-  Eigen::MatrixXd rotors_origin_from_cog = robot_model_ptr->getRotorsOriginFromCog();
-  Eigen::MatrixXd rotors_normal_from_cog = robot_model_ptr->getRotorsNormalFromCog();
+  // 解決：戻り値の型を std::vector<Eigen::Vector3d> に修正し、テンプレートを明示
+  std::vector<Eigen::Vector3d> rotors_origin_from_cog = robot_model_ptr->getRotorsOriginFromCog<Eigen::Vector3d>();
+  std::vector<Eigen::Vector3d> rotors_normal_from_cog = robot_model_ptr->getRotorsNormalFromCog<Eigen::Vector3d>();
 
-  if (rotors_origin_from_cog.cols() == 0 || rotors_normal_from_cog.cols() == 0) {
+  if (rotors_origin_from_cog.empty() || rotors_normal_from_cog.empty()) {
     ROS_WARN("[HydrusXiNavigation] Failed to get rotor positions or normals");
     return 0.0;
   }
@@ -483,45 +476,36 @@ double HydrusXiUnderActuatedNavigator::computeInternalMomentZ(
   double tau_internal = 0.0;
 
   // ===== ステップ 4: 内部モーメントを計算 =====
-  
-  for (int i = 0; i < thrusts.size() && i < rotors_origin_from_cog.cols(); ++i) {
+  // 解決：行列形式の `.cols()` から std::vector 形式の `.size()` に修正
+  for (int i = 0; i < thrusts.size() && i < rotors_origin_from_cog.size(); ++i) {
     double thrust = thrusts[i];
     double gimbal = (i < gimbals.size()) ? gimbals[i] : 0.0;
 
-    // ローター位置（重心基準）
-    Eigen::Vector3d rotor_pos_from_cog = rotors_origin_from_cog.col(i);
-    
-    // ローター法線（推力方向）
-    Eigen::Vector3d rotor_normal = rotors_normal_from_cog.col(i);
+    // 解決：行列の `.col(i)` から std::vector 形式の配列アクセス `[i]` に修正
+    Eigen::Vector3d rotor_pos_from_cog = rotors_origin_from_cog[i];
+    Eigen::Vector3d rotor_normal = rotors_normal_from_cog[i];
     
     // ジンバル角を考慮した推力ベクトル
-    // ローター座標系の x-y 平面内でジンバル角で回転
     double cos_gimbal = std::cos(gimbal);
     double sin_gimbal = std::sin(gimbal);
     
-    // ローター法線の垂直方向（x, y 方向）を計算
     Eigen::Vector3d rotor_x = Eigen::Vector3d(
       rotor_normal(1), -rotor_normal(0), 0.0
     ).normalized();
     
     Eigen::Vector3d rotor_y = rotor_normal.cross(rotor_x).normalized();
     
-    // ジンバル角を反映した推力方向
     Eigen::Vector3d thrust_direction = 
         cos_gimbal * rotor_x + 
         sin_gimbal * rotor_y + 
         rotor_normal;
     thrust_direction.normalize();
     
-    // 推力ベクトル
     Eigen::Vector3d F_rotor = thrust * thrust_direction;
 
     // ===== ステップ 5: 対象関節周りのモーメントを計算 =====
-    
-    // 対象関節からのローター相対位置
     Eigen::Vector3d r_from_joint = rotor_pos_from_cog + cog_pos - joint_pos;
     
-    // 外積でモーメントを計算
     Eigen::Vector3d moment_vec = r_from_joint.cross(F_rotor);
     double moment_z = moment_vec.dot(z_axis);
 
@@ -533,7 +517,6 @@ double HydrusXiUnderActuatedNavigator::computeInternalMomentZ(
   }
 
   // ===== ステップ 6: ペナルティ項を計算 =====
-  
   double error = tau_internal - tau_des_target_;
   double penalty = -target_moment_weight_ * error * error;
 
