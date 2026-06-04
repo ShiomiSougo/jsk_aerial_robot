@@ -2,10 +2,10 @@
 # -*- coding: utf-8 -*-
 
 """
-Hydrus-Xi 空力推力駆動 連続変形シーケンス実行スクリプト（シミュレータ仕様完全適合版）
+Hydrus-Xi 空力推力駆動 連続変形シーケンス実行スクリプト（シミュレータ仕様・完全バグ修正版）
 
 使用例:
-  python hydrus_xi_deformation_sequence.py 0.4 0.2 -0.4
+  python hydrus_xi_deformation_sequence.py 0.0 0.4 -1.0
 """
 
 import rospy
@@ -80,7 +80,7 @@ class HydrusXiDeformationSequencer:
         # ===== Joint 2 スロープ制御用 =====
         self.joint2_current_target = target_q2
         
-        # ===== ROS パブリッシャ（シミュレータの仕様に合わせ joints_ctrl 1本に絞る） =====
+        # ===== ROS パブリッシャ =====
         self.joints_ctrl_pub = rospy.Publisher(
             '/hydrus_xi/joints_ctrl',
             JointState,
@@ -168,6 +168,12 @@ class HydrusXiDeformationSequencer:
                 msg.velocity.append(0.0)
                 msg.effort.append(0.0)
         self.joints_ctrl_pub.publish(msg)
+
+    def _send_internal_moment_command(self, joint_idx, tau_des):
+        """★【復活】C++のナビゲーション側に内部モーメントを送信する関数"""
+        msg = Float64MultiArray()
+        msg.data = [float(joint_idx), float(tau_des)]
+        self.moment_pub.publish(msg)
     
     def _calculate_target_moment(self, joint_name):
         angle_diff = self._get_angle_difference(self.current_q[joint_name], self.target_q[joint_name])
@@ -215,12 +221,11 @@ class HydrusXiDeformationSequencer:
             self.step_start_time = rospy.Time.now()
     
     def _step_joint1_deform(self):
-        """Step 2: Joint 1 の空力変形（★仮想脱力ロジック適用）"""
+        """Step 2: Joint 1 の空力変形（仮想脱力ロジック適用）"""
         if self.control_mode['joint1'] != ControlState.UNLOCKED:
             self._set_control_mode('joint1', ControlState.UNLOCKED)
         
-        # ★【核心の修正】joint1を外さず、現在の角度(current_q)をそのままオウム返しにして送る
-        # これによりGazeboの関節サーボの突っ張りが消滅し、外力（内部モーメント）で動くようになります
+        # joint1に現在の角度をオウム返しし、Gazebo側のサーボ剛性をゼロにする
         self._send_position_command({
             'joint1': self.current_q['joint1'],
             'joint2': self.current_q['joint2'],
@@ -257,11 +262,11 @@ class HydrusXiDeformationSequencer:
             self.step_start_time = rospy.Time.now()
     
     def _step_joint3_deform(self):
-        """Step 4: Joint 3 の空力変形（★仮想脱力ロジック適用）"""
+        """Step 4: Joint 3 の空力変形（仮想脱力ロジック適用）"""
         if self.control_mode['joint3'] != ControlState.UNLOCKED:
             self._set_control_mode('joint3', ControlState.UNLOCKED)
         
-        # ★【核心の修正】joint3に現在の角度をオウム返しし、ロックを解除
+        # joint3に現在の角度をオウム返しし、ロックを解除
         self._send_position_command({
             'joint1': self.current_q['joint1'],
             'joint2': self.current_q['joint2'],
