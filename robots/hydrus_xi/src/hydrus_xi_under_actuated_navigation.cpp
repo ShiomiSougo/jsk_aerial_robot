@@ -8,7 +8,7 @@ namespace
   int cnt = 0;
   int invalid_cnt = 0;
 
-  // ===== 【新規追加】内部モーメント用ペナルティ関数 =====
+  // ===== 内部モーメント用ペナルティ関数 =====
   double applyInternalMomentPenalty(
       double objective_base,
       const std::vector<double>& x,
@@ -57,7 +57,7 @@ namespace
                           + planner->getForceVariantWeight() / variant 
                           + planner->getFCTMinWeight() * robot_model->getFeasibleControlTMin();
 
-    // ===== 【新規追加】ペナルティ項の適用 =====
+    // ペナルティ項の適用
     return applyInternalMomentPenalty(objective_base, x, planner);
   }
 
@@ -137,7 +137,7 @@ namespace
                           + planner->getForceVariantWeight() / variant 
                           + planner->getYawTorqueWeight() * planner->getMaxMinYaw();
 
-    // ===== 【新規追加】ペナルティ項の適用 =====
+    // ペナルティ項の適用
     return applyInternalMomentPenalty(objective_base, x, planner);
   }
 
@@ -192,9 +192,9 @@ void HydrusXiUnderActuatedNavigator::initialize(ros::NodeHandle nh, ros::NodeHan
 
   rosParamInit();
 
-  gimbal_ctrl_pub_ = nh_.advertise<sensor_msgs::JointState>("gimbals_ctrl", 1);
+  gimbal_ctrl_pub = nh_.advertise<sensor_msgs::JointState>("gimbals_ctrl", 1);
 
-  // ===== 【新規追加】内部モーメント制御の初期化 =====
+  // 内部モーメント制御の初期化
   target_joint_index_ = -1;
   tau_des_target_ = 0.0;
   has_moment_command_ = false;
@@ -206,7 +206,6 @@ void HydrusXiUnderActuatedNavigator::initialize(ros::NodeHandle nh, ros::NodeHan
       this
   );
   ROS_INFO("[HydrusXiNavigation] Subscribed to /hydrus_xi/target_internal_moment");
-  // ===== 【新規追加ここまで】 =====
 
   if(nh.hasParam("control_gimbal_names"))
     {
@@ -419,12 +418,12 @@ void HydrusXiUnderActuatedNavigator::rosParamInit()
   getParam<double>(navi_nh, "baselink_rot_thresh", baselink_rot_thresh_, 0.02);
   getParam<double>(navi_nh, "fc_t_min_thresh", fc_t_min_thresh_, 2.0);
 
-  // ===== 【新規追加】内部モーメント制御の重み =====
+  // 内部モーメント制御の重み
   getParam<double>(navi_nh, "target_moment_weight", target_moment_weight_, 0.5);
   ROS_INFO("[HydrusXiNavigation] target_moment_weight: %.3f", target_moment_weight_);
 }
 
-// ===== 【新規追加】コールバック関数 =====
+// コールバック関数
 void HydrusXiUnderActuatedNavigator::momentCommandCallback(
     const std_msgs::Float64MultiArray::ConstPtr& msg)
 {
@@ -443,7 +442,7 @@ void HydrusXiUnderActuatedNavigator::momentCommandCallback(
              target_joint_index_, tau_des_target_);
 }
 
-// ===== 【新規追加】内部モーメント計算（テンプレート型＆配列対応版） =====
+// ===== 【修正版】内部モーメント計算（KDL安全対応版） =====
 double HydrusXiUnderActuatedNavigator::computeInternalMomentZ(
     const std::vector<double>& x,
     const boost::shared_ptr<HydrusTiltedRobotModel>& robot_model_ptr)
@@ -453,8 +452,9 @@ double HydrusXiUnderActuatedNavigator::computeInternalMomentZ(
   }
 
   // ===== ステップ 1: 重心座標を取得 =====
-  // 解決：テンプレート引数 <Eigen::Vector3d> を明示的に指定
-  Eigen::Vector3d cog_pos = robot_model_ptr->getCog<Eigen::Vector3d>();
+  // 解決：JSK内部で確実にサポートされている KDL::Vector 型で一度取得し、Eigen に変換
+  KDL::Vector cog_kdl = robot_model_ptr->getCog<KDL::Vector>();
+  Eigen::Vector3d cog_pos(cog_kdl.x(), cog_kdl.y(), cog_kdl.z());
   
   // ===== ステップ 2: 対象関節位置を計算 =====
   Eigen::Vector3d joint_pos = cog_pos;  // 仮置き
@@ -463,25 +463,33 @@ double HydrusXiUnderActuatedNavigator::computeInternalMomentZ(
   std::vector<double> thrusts = extractThrustsFromOptVars(x, robot_model_ptr);
   std::vector<double> gimbals = extractGimbalsFromOptVars(x);
   
-  // 解決：戻り値の型を std::vector<Eigen::Vector3d> に修正し、テンプレートを明示
-  std::vector<Eigen::Vector3d> rotors_origin_from_cog = robot_model_ptr->getRotorsOriginFromCog<Eigen::Vector3d>();
-  std::vector<Eigen::Vector3d> rotors_normal_from_cog = robot_model_ptr->getRotorsNormalFromCog<Eigen::Vector3d>();
+  // 解決：戻り値を KDL::Vector の配列として安全に取得
+  std::vector<KDL::Vector> rotors_origin_kdl = robot_model_ptr->getRotorsOriginFromCog<KDL::Vector>();
+  std::vector<KDL::Vector> rotors_normal_kdl = robot_model_ptr->getRotorsNormalFromCog<KDL::Vector>();
 
-  if (rotors_origin_from_cog.empty() || rotors_normal_from_cog.empty()) {
+  if (rotors_origin_kdl.empty() || rotors_normal_kdl.empty()) {
     ROS_WARN("[HydrusXiNavigation] Failed to get rotor positions or normals");
     return 0.0;
+  }
+
+  // 安全に Eigen::Vector3d の配列へ詰め替える
+  std::vector<Eigen::Vector3d> rotors_origin_from_cog;
+  std::vector<Eigen::Vector3d> rotors_normal_from_cog;
+  for (const auto& v : rotors_origin_kdl) {
+    rotors_origin_from_cog.push_back(Eigen::Vector3d(v.x(), v.y(), v.z()));
+  }
+  for (const auto& v : rotors_normal_kdl) {
+    rotors_normal_from_cog.push_back(Eigen::Vector3d(v.x(), v.y(), v.z()));
   }
 
   Eigen::Vector3d z_axis(0.0, 0.0, 1.0);
   double tau_internal = 0.0;
 
   // ===== ステップ 4: 内部モーメントを計算 =====
-  // 解決：行列形式の `.cols()` から std::vector 形式の `.size()` に修正
   for (int i = 0; i < thrusts.size() && i < rotors_origin_from_cog.size(); ++i) {
     double thrust = thrusts[i];
     double gimbal = (i < gimbals.size()) ? gimbals[i] : 0.0;
 
-    // 解決：行列の `.col(i)` から std::vector 形式の配列アクセス `[i]` に修正
     Eigen::Vector3d rotor_pos_from_cog = rotors_origin_from_cog[i];
     Eigen::Vector3d rotor_normal = rotors_normal_from_cog[i];
     
@@ -528,7 +536,7 @@ double HydrusXiUnderActuatedNavigator::computeInternalMomentZ(
   return penalty;
 }
 
-// ===== 【新規追加】推力抽出 =====
+// 推力抽出
 std::vector<double> HydrusXiUnderActuatedNavigator::extractThrustsFromOptVars(
     const std::vector<double>& x,
     const boost::shared_ptr<HydrusTiltedRobotModel>& robot_model_ptr)
@@ -543,7 +551,7 @@ std::vector<double> HydrusXiUnderActuatedNavigator::extractThrustsFromOptVars(
   return thrusts;
 }
 
-// ===== 【新規追加】ジンバル角抽出 =====
+// ジンバル角抽出
 std::vector<double> HydrusXiUnderActuatedNavigator::extractGimbalsFromOptVars(
     const std::vector<double>& x)
 {
