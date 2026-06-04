@@ -258,7 +258,6 @@ class HydrusXiDeformationSequencer:
     
     def _step_joint2_servo(self):
         """Step 5: Joint 2 のサーボ変形（★両隣の関節剛性を完全固定キープ）"""
-        angle_diff = self._get_angle_difference(self.joint2_targets = self.joint_targets['joint2'], self.target_q['joint2'])
         angle_diff = self._get_angle_difference(self.joint_targets['joint2'], self.target_q['joint2'])
         if abs(angle_diff) > JOINT2_RAMP_RATE:
             if angle_diff > 0: self.joint_targets['joint2'] += JOINT_RAMP_RATE
