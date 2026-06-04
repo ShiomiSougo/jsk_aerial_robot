@@ -2,15 +2,11 @@
 # -*- coding: utf-8 -*-
 
 """
-Hydrus-Xi 空力推力駆動変形シーケンス実行スクリプト
+Hydrus-Xi 空力推力駆動 連続変形シーケンス実行スクリプト
 
-使用例:
+使用例（初回起動時）:
   python hydrus_xi_deformation_sequence.py 0.5 0.3 -0.5
-  
-Target angles:
-  target_q1: Joint 1 の目標角度 [rad]
-  target_q2: Joint 2 の目標角度 [rad]
-  target_q3: Joint 3 の目標角度 [rad]
+  （引数を省略した場合は、自動的に 0.0 0.0 0.0 からスタートして入力待ちになります）
 """
 
 import rospy
@@ -57,19 +53,11 @@ DT = 1.0 / LOOP_FREQ             # ループ周期 [秒]
 
 class HydrusXiDeformationSequencer:
     """
-    Hydrus-Xi の変形シーケンスを制御するステートマシンクラス
+    Hydrus-Xi の変形シーケンスを制御するステートマシンクラス（連続アップデート対応版）
     """
     
     def __init__(self, target_q1, target_q2, target_q3):
-        """
-        初期化
-        
-        Args:
-            target_q1 (float): Joint 1 の目標角度 [rad]
-            target_q2 (float): Joint 2 の目標角度 [rad]
-            target_q3 (float): Joint 3 の目標角度 [rad]
-        """
-        
+        """初期化"""
         # ===== ターゲット角度 =====
         self.target_q = {
             'joint1': target_q1,
@@ -140,16 +128,32 @@ class HydrusXiDeformationSequencer:
             rospy.Duration(DT),
             self._control_loop
         )
+
+    # ===== 【新規追加】次の目標角度をセットしてシーケンスをリセットするメソッド =====
+    def update_target_angles(self, q1, q2, q3):
+        """新しい目標角度を設定し、ステートマシンを初期化状態に戻す"""
+        self.target_q['joint1'] = q1
+        self.target_q['joint2'] = q2
+        self.target_q['joint3'] = q3
+        
+        # 制御モードを Locked（位置制御）にリセット
+        self.control_mode['joint1'] = ControlState.LOCKED
+        self.control_mode['joint2'] = ControlState.LOCKED
+        self.control_mode['joint3'] = ControlState.LOCKED
+        
+        # ステップを最初（INIT）に戻してタイマースタート
+        self.current_step = SequenceStep.INIT
+        self.step_start_time = rospy.Time.now()
+        
+        rospy.loginfo(
+            "[HydrusXiSequencer] 🔄 新しい目標角度を受け入れました: "
+            "q1=%.3f, q2=%.3f, q3=%.3f [rad]. シーケンスを再始動します。",
+            q1, q2, q3
+        )
     
     # ======================== コールバック関数 ========================
     
     def _joint_state_callback(self, msg):
-        """
-        /hydrus_xi/joint_states トピックのコールバック
-        
-        Args:
-            msg (sensor_msgs/JointState): 関節状態メッセージ
-        """
         for i, name in enumerate(msg.name):
             if name == 'joint1':
                 self.current_q['joint1'] = msg.position[i]
@@ -164,7 +168,6 @@ class HydrusXiDeformationSequencer:
     # ======================== ユーティリティ関数 ========================
     
     def _normalize_angle(self, angle):
-        """角度を [-pi, pi] の範囲に正規化"""
         while angle > math.pi:
             angle -= 2 * math.pi
         while angle < -math.pi:
@@ -172,12 +175,10 @@ class HydrusXiDeformationSequencer:
         return angle
     
     def _get_angle_difference(self, current, target):
-        """現在角度と目標角度の差分を計算（最短経路）"""
         diff = target - current
         return self._normalize_angle(diff)
     
     def _set_control_mode(self, joint_name, mode):
-        """指定関節の制御モードを変更"""
         self.control_mode[joint_name] = mode
         rospy.loginfo(
             "[HydrusXiSequencer] %s control mode: %s",
@@ -185,12 +186,6 @@ class HydrusXiDeformationSequencer:
         )
     
     def _send_position_command(self, joints_dict):
-        """
-        位置指令を送信（Lockモード）
-        
-        Args:
-            joints_dict (dict): {'joint1': pos1, 'joint2': pos2, 'joint3': pos3}
-        """
         msg = JointState()
         msg.header.stamp = rospy.Time.now()
         msg.name = []
@@ -208,12 +203,6 @@ class HydrusXiDeformationSequencer:
         self.joints_ctrl_pub.publish(msg)
     
     def _send_effort_command(self, joints_dict):
-        """
-        エフォート指令を送信（Unlockモード、摩擦トルク）
-        
-        Args:
-            joints_dict (dict): {'joint1': torque1, 'joint2': torque2, 'joint3': torque3}
-        """
         msg = JointState()
         msg.header.stamp = rospy.Time.now()
         msg.name = []
@@ -231,30 +220,16 @@ class HydrusXiDeformationSequencer:
         self.joints_torque_ctrl_pub.publish(msg)
     
     def _send_internal_moment_command(self, joint_idx, tau_des):
-        """
-        C++ノードへ内部モーメント指令を送信
-        
-        Args:
-            joint_idx (int): 対象関節インデックス (0=joint1, 1=joint2, 2=joint3)
-            tau_des (float): 目標内部モーメント [N*m]
-        """
         msg = Float64MultiArray()
         msg.data = [float(joint_idx), float(tau_des)]
         self.moment_pub.publish(msg)
-        
-        rospy.logdebug(
-            "[HydrusXiSequencer] Sent internal moment: joint_idx=%d, tau_des=%.4f",
-            joint_idx, tau_des
-        )
     
     def _calculate_friction_torque(self, joint_name):
-        """摩擦トルクを計算（符号付き）"""
         dq = self.current_dq[joint_name]
         tau_fric = -FRICTION_COEFF * dq
         return tau_fric
     
     def _calculate_pretension_moment(self, joint_name, joint_idx):
-        """予張力モーメントを計算（最短経路を考慮した符号付き）"""
         angle_diff = self._get_angle_difference(
             self.current_q[joint_name],
             self.target_q[joint_name]
@@ -274,19 +249,15 @@ class HydrusXiDeformationSequencer:
     
     def _step_init(self):
         """Step 0: 初期ホバリング"""
-        # 全関節を現在値で位置制御
         self._send_position_command({
             'joint1': self.current_q['joint1'],
             'joint2': self.current_q['joint2'],
             'joint3': self.current_q['joint3']
         })
-        
-        # 内部モーメントをリセット
         self._send_internal_moment_command(0, 0.0)
         self._send_internal_moment_command(2, 0.0)
         
         elapsed = (rospy.Time.now() - self.step_start_time).to_sec()
-        
         if elapsed >= STEP_DURATIONS[SequenceStep.INIT]:
             rospy.loginfo("[HydrusXiSequencer] Step 0 (INIT) completed. Moving to Step 1.")
             self.current_step = SequenceStep.JOINT1_PRETENSION
@@ -294,19 +265,15 @@ class HydrusXiDeformationSequencer:
     
     def _step_joint1_pretension(self):
         """Step 1: Joint 1 の予張力生成"""
-        # 全関節を現在値で位置制御（Joint 1 はLock）
         self._send_position_command({
             'joint1': self.current_q['joint1'],
             'joint2': self.current_q['joint2'],
             'joint3': self.current_q['joint3']
         })
-        
-        # Joint 1 の予張力モーメントを計算・送信
         tau_des = self._calculate_pretension_moment('joint1', 0)
         self._send_internal_moment_command(0, tau_des)
         
         elapsed = (rospy.Time.now() - self.step_start_time).to_sec()
-        
         if elapsed >= STEP_DURATIONS[SequenceStep.JOINT1_PRETENSION]:
             rospy.loginfo("[HydrusXiSequencer] Step 1 (JOINT1_PRETENSION) completed. Moving to Step 2.")
             self.current_step = SequenceStep.JOINT1_DEFORM
@@ -314,57 +281,35 @@ class HydrusXiDeformationSequencer:
     
     def _step_joint1_deform(self):
         """Step 2: Joint 1 の空力変形"""
-        # Joint 1 をUnlockモードに切り替え
         if self.control_mode['joint1'] != ControlState.UNLOCKED:
             self._set_control_mode('joint1', ControlState.UNLOCKED)
         
-        # Joint 1 の摩擦トルクを計算・送信
         tau_fric = self._calculate_friction_torque('joint1')
-        
-        # Joint 2, 3 は位置制御で保持、Joint 1 はトルク制御
         self._send_position_command({
             'joint2': self.current_q['joint2'],
             'joint3': self.current_q['joint3']
         })
+        self._send_effort_command({'joint1': tau_fric})
         
-        self._send_effort_command({
-            'joint1': tau_fric
-        })
-        
-        # 目標角度との誤差をチェック
-        angle_error = abs(self._get_angle_difference(
-            self.current_q['joint1'],
-            self.target_q['joint1']
-        ))
-        
+        angle_error = abs(self._get_angle_difference(self.current_q['joint1'], self.target_q['joint1']))
         if angle_error <= ANGLE_ERROR_THRESHOLD:
-            rospy.loginfo(
-                "[HydrusXiSequencer] Joint 1 reached target angle (error=%.4f). "
-                "Moving to Step 3.",
-                angle_error
-            )
-            # Joint 1 をLockモードに戻す
+            rospy.loginfo("[HydrusXiSequencer] Joint 1 reached target angle. Moving to Step 3.")
             self._send_position_command({'joint1': self.target_q['joint1']})
             self._send_internal_moment_command(0, 0.0)
-            
             self.current_step = SequenceStep.JOINT3_PRETENSION
             self.step_start_time = rospy.Time.now()
     
     def _step_joint3_pretension(self):
         """Step 3: Joint 3 の予張力生成"""
-        # 全関節を現在値で位置制御（Joint 3 はLock）
         self._send_position_command({
             'joint1': self.current_q['joint1'],
             'joint2': self.current_q['joint2'],
             'joint3': self.current_q['joint3']
         })
-        
-        # Joint 3 の予張力モーメントを計算・送信
         tau_des = self._calculate_pretension_moment('joint3', 2)
         self._send_internal_moment_command(2, tau_des)
         
         elapsed = (rospy.Time.now() - self.step_start_time).to_sec()
-        
         if elapsed >= STEP_DURATIONS[SequenceStep.JOINT3_PRETENSION]:
             rospy.loginfo("[HydrusXiSequencer] Step 3 (JOINT3_PRETENSION) completed. Moving to Step 4.")
             self.current_step = SequenceStep.JOINT3_DEFORM
@@ -372,106 +317,67 @@ class HydrusXiDeformationSequencer:
     
     def _step_joint3_deform(self):
         """Step 4: Joint 3 の空力変形"""
-        # Joint 3 をUnlockモードに切り替え
         if self.control_mode['joint3'] != ControlState.UNLOCKED:
             self._set_control_mode('joint3', ControlState.UNLOCKED)
         
-        # Joint 3 の摩擦トルクを計算・送信
         tau_fric = self._calculate_friction_torque('joint3')
-        
-        # Joint 1, 2 は位置制御で保持、Joint 3 はトルク制御
         self._send_position_command({
             'joint1': self.current_q['joint1'],
             'joint2': self.current_q['joint2']
         })
+        self._send_effort_command({'joint3': tau_fric})
         
-        self._send_effort_command({
-            'joint3': tau_fric
-        })
-        
-        # 目標角度との誤差をチェック
-        angle_error = abs(self._get_angle_difference(
-            self.current_q['joint3'],
-            self.target_q['joint3']
-        ))
-        
+        angle_error = abs(self._get_angle_difference(self.current_q['joint3'], self.target_q['joint3']))
         if angle_error <= ANGLE_ERROR_THRESHOLD:
-            rospy.loginfo(
-                "[HydrusXiSequencer] Joint 3 reached target angle (error=%.4f). "
-                "Moving to Step 5.",
-                angle_error
-            )
-            # Joint 3 をLockモードに戻す
+            rospy.loginfo("[HydrusXiSequencer] Joint 3 reached target angle. Moving to Step 5.")
             self._send_position_command({'joint3': self.target_q['joint3']})
             self._send_internal_moment_command(2, 0.0)
-            
-            # Joint 2 スロープ制御の初期化
             self.joint2_current_target = self.current_q['joint2']
-            
             self.current_step = SequenceStep.JOINT2_SERVO
             self.step_start_time = rospy.Time.now()
     
     def _step_joint2_servo(self):
         """Step 5: Joint 2 のサーボ変形"""
-        # Joint 1, 3 は現在値で保持
-        # 内部モーメント指令はリセット
         self._send_position_command({
             'joint1': self.current_q['joint1'],
             'joint3': self.current_q['joint3']
         })
-        
         self._send_internal_moment_command(0, 0.0)
         self._send_internal_moment_command(2, 0.0)
         
-        # Joint 2 の目標値をスロープ更新
-        angle_diff = self._get_angle_difference(
-            self.joint2_current_target,
-            self.target_q['joint2']
-        )
-        
+        angle_diff = self._get_angle_difference(self.joint2_current_target, self.target_q['joint2'])
         if abs(angle_diff) > JOINT2_RAMP_RATE:
-            # まだ目標に到達していない → スロープ更新
             if angle_diff > 0:
                 self.joint2_current_target += JOINT2_RAMP_RATE
             else:
                 self.joint2_current_target -= JOINT2_RAMP_RATE
         else:
-            # 目標に到達した
             self.joint2_current_target = self.target_q['joint2']
         
-        # Joint 2 に位置指令を送信
         self._send_position_command({'joint2': self.joint2_current_target})
         
-        # 目標到達確認
-        if abs(self._get_angle_difference(
-            self.current_q['joint2'],
-            self.target_q['joint2']
-        )) <= ANGLE_ERROR_THRESHOLD:
+        if abs(self._get_angle_difference(self.current_q['joint2'], self.target_q['joint2'])) <= ANGLE_ERROR_THRESHOLD:
             rospy.loginfo("[HydrusXiSequencer] Step 5 (JOINT2_SERVO) completed. Moving to Step 6 (COMPLETE).")
             self.current_step = SequenceStep.COMPLETE
             self.step_start_time = rospy.Time.now()
     
     def _step_complete(self):
-        """Step 6: 完了"""
+        """Step 6: 完了状態（ここで位置をガッチリホールドして次の命令を待つ）"""
         self._send_position_command({
             'joint1': self.target_q['joint1'],
             'joint2': self.target_q['joint2'],
             'joint3': self.target_q['joint3']
         })
-        
         self._send_internal_moment_command(0, 0.0)
         self._send_internal_moment_command(2, 0.0)
         
-        rospy.loginfo(
-            "[HydrusXiSequencer] Deformation sequence COMPLETE. "
-            "Final angles: q1=%.3f, q2=%.3f, q3=%.3f [rad]",
-            self.current_q['joint1'], self.current_q['joint2'], self.current_q['joint3']
-        )
+        # 完了ログを何度も出さないように、内部で1回だけデバッグ表示
+        if (rospy.Time.now() - self.step_start_time).to_sec() < 0.1:
+            rospy.loginfo("[HydrusXiSequencer] 変形完了状態にあります。次のターゲット角度の入力を待機中...")
     
     # ======================== メインループ ========================
     
     def _control_loop(self, event):
-        """メインコントロールループ（20 Hz）"""
         try:
             if self.current_step == SequenceStep.INIT:
                 self._step_init()
@@ -487,53 +393,73 @@ class HydrusXiDeformationSequencer:
                 self._step_joint2_servo()
             elif self.current_step == SequenceStep.COMPLETE:
                 self._step_complete()
-        
         except Exception as e:
-            rospy.logerr(
-                "[HydrusXiSequencer] Error in control loop: %s",
-                str(e)
-            )
+            rospy.logerr("[HydrusXiSequencer] Error in control loop: %s", str(e))
     
     def shutdown(self):
-        """シャットダウン処理"""
         rospy.loginfo("[HydrusXiSequencer] Shutting down...")
         self.loop_timer.shutdown()
         rospy.loginfo("[HydrusXiSequencer] Shutdown complete.")
 
-
 # ======================== メイン関数 ========================
 
 def main():
-    """メイン関数"""
+    """メイン関数（インタラクティブ無限入力ループ版）"""
     rospy.init_node('hydrus_xi_deformation_sequencer', log_level=rospy.INFO)
     
-    if len(sys.argv) < 4:
-        rospy.logerr(
-            "[HydrusXiSequencer] Usage: python hydrus_xi_deformation_sequence.py "
-            "<target_q1> <target_q2> <target_q3>"
-        )
-        rospy.logerr("  Example: python hydrus_xi_deformation_sequence.py 0.5 0.3 -0.5")
-        sys.exit(1)
+    # 初回の起動時の角度を取得（引数がない場合は 0 0 0 から開始）
+    target_q1, target_q2, target_q3 = 0.0, 0.0, 0.0
+    if len(sys.argv) >= 4:
+        try:
+            target_q1 = float(sys.argv[1])
+            target_q2 = float(sys.argv[2])
+            target_q3 = float(sys.argv[3])
+        except ValueError:
+            rospy.logerr("[HydrusXiSequencer] Failed to parse initial arguments. Starting with 0.0 0.0 0.0")
     
-    try:
-        target_q1 = float(sys.argv[1])
-        target_q2 = float(sys.argv[2])
-        target_q3 = float(sys.argv[3])
-    except ValueError:
-        rospy.logerr("[HydrusXiSequencer] Failed to parse target angles as float.")
-        sys.exit(1)
-    
+    # シーケンサーの初期化
     sequencer = HydrusXiDeformationSequencer(target_q1, target_q2, target_q3)
+    rospy.loginfo("[HydrusXiSequencer] 連続変形シーケンス制御スクリプトが常駐を開始しました。")
     
-    rospy.loginfo("[HydrusXiSequencer] Deformation sequence started.")
-    
-    try:
-        rospy.spin()
-    except KeyboardInterrupt:
-        rospy.loginfo("[HydrusXiSequencer] Interrupted by user.")
-    finally:
-        sequencer.shutdown()
-
+    # インタラクティブ入力用のメインスインループ
+    rate = rospy.Rate(10) # 10Hz で状態チェック
+    while not rospy.is_shutdown():
+        # 変形シーケンスが完了状態（COMPLETE）になったら、入力を促す
+        if sequencer.current_step == SequenceStep.COMPLETE:
+            print("\n" + "=" * 60)
+            print(" 🤖 【Hydrus-Xi 連続変形コントロールシステム】")
+            print(" 現在の目標角度への変形がすべて完了しました（位置保持中）。")
+            print(" 次の目標関節角度 [q1 q2 q3] をスペース区切りで入力してください。")
+            print(" (例: 0.5 0.3 -0.5)")
+            print(" スクリプトを終了する場合は 'q' を入力してください。")
+            print("=" * 60)
+            
+            try:
+                user_input = input("✨ 次の目標角度を入力 -> : ")
+                
+                # 終了コマンドの処理
+                if user_input.strip().lower() == 'q':
+                    rospy.loginfo("[HydrusXiSequencer] 終了要請を受け取りました。")
+                    break
+                
+                # 入力された文字列をパース
+                angles = [float(x) for x in user_input.split()]
+                if len(angles) != 3:
+                    print("⚠️  [入力エラー] 3つの数値をスペースで区切って入力してください。")
+                    continue
+                
+                # 新しい目標角度を設定してシーケンスを再始動！
+                sequencer.update_target_angles(angles[0], angles[1], angles[2])
+                
+            except ValueError:
+                print("⚠️  [入力エラー] 有効な数値（float型）を入力してください。")
+            except KeyboardInterrupt:
+                break
+        else:
+            # 変形シーケンスが実行中の間は、プロンプトを出さずに待機
+            rate.sleep()
+            
+    sequencer.shutdown()
 
 if __name__ == '__main__':
     main()
