@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 
 """
-Hydrus-Xi 空力推力駆動 連続変形シーケンス実行スクリプト（制御分離・完全開通版）
+Hydrus-Xi 空力推力駆動 連続変形シーケンス実行スクリプト（シミュレータ仕様完全適合版）
 
 使用例:
   python hydrus_xi_deformation_sequence.py 0.4 0.2 -0.4
@@ -21,7 +21,7 @@ from enum import Enum
 class ControlState(Enum):
     """制御モードの定義"""
     LOCKED = 0      # 位置制御（剛体化）
-    UNLOCKED = 1    # エフォート制御（摩擦シミュレーション）
+    UNLOCKED = 1    # 仮想脱力制御（現在値追従によるロック解除）
 
 class SequenceStep(Enum):
     """シーケンスのステップ定義"""
@@ -34,7 +34,6 @@ class SequenceStep(Enum):
     COMPLETE = 6                  # 完了
 
 # パラメータ（調整可能）
-FRICTION_COEFF = 0.01             # 摩擦係数 [N*m*s/rad]
 ANGLE_ERROR_THRESHOLD = 0.05     # 角度誤差閾値 [rad]
 JOINT2_RAMP_RATE = 0.01          # Joint 2 スロープ速度 [rad/loop]
 
@@ -81,15 +80,9 @@ class HydrusXiDeformationSequencer:
         # ===== Joint 2 スロープ制御用 =====
         self.joint2_current_target = target_q2
         
-        # ===== ROS パブリッシャ（正しい2本のトピックに分離） =====
+        # ===== ROS パブリッシャ（シミュレータの仕様に合わせ joints_ctrl 1本に絞る） =====
         self.joints_ctrl_pub = rospy.Publisher(
             '/hydrus_xi/joints_ctrl',
-            JointState,
-            queue_size=1
-        )
-        
-        self.joints_torque_ctrl_pub = rospy.Publisher(
-            '/hydrus_xi/joints_torque_ctrl',
             JointState,
             queue_size=1
         )
@@ -165,7 +158,7 @@ class HydrusXiDeformationSequencer:
         rospy.loginfo("[HydrusXiSequencer] %s control mode: %s", joint_name, mode.name)
     
     def _send_position_command(self, joints_dict):
-        """位置制御したい関節だけを明示的に指定して送信（これによって他が脱力できる）"""
+        """位置指令を送信（シミュレータ環境で唯一機能するパイプライン）"""
         msg = JointState()
         msg.header.stamp = rospy.Time.now()
         for joint_name in ['joint1', 'joint2', 'joint3']:
@@ -175,27 +168,6 @@ class HydrusXiDeformationSequencer:
                 msg.velocity.append(0.0)
                 msg.effort.append(0.0)
         self.joints_ctrl_pub.publish(msg)
-    
-    def _send_effort_command(self, joints_dict):
-        """トルク制御したい関節だけを明示的に指定して送信"""
-        msg = JointState()
-        msg.header.stamp = rospy.Time.now()
-        for joint_name in ['joint1', 'joint2', 'joint3']:
-            if joint_name in joints_dict:
-                msg.name.append(joint_name)
-                msg.position.append(0.0)
-                msg.velocity.append(0.0)
-                msg.effort.append(joints_dict[joint_name])
-        self.joints_torque_ctrl_pub.publish(msg)
-    
-    def _send_internal_moment_command(self, joint_idx, tau_des):
-        msg = Float64MultiArray()
-        msg.data = [float(joint_idx), float(tau_des)]
-        self.moment_pub.publish(msg)
-    
-    def _calculate_friction_torque(self, joint_name):
-        dq = self.current_dq[joint_name]
-        return -FRICTION_COEFF * dq
     
     def _calculate_target_moment(self, joint_name):
         angle_diff = self._get_angle_difference(self.current_q[joint_name], self.target_q[joint_name])
@@ -243,20 +215,19 @@ class HydrusXiDeformationSequencer:
             self.step_start_time = rospy.Time.now()
     
     def _step_joint1_deform(self):
-        """Step 2: Joint 1 の空力変形（Joint1の位置固定を完全に排除）"""
+        """Step 2: Joint 1 の空力変形（★仮想脱力ロジック適用）"""
         if self.control_mode['joint1'] != ControlState.UNLOCKED:
             self._set_control_mode('joint1', ControlState.UNLOCKED)
         
-        tau_fric = self._calculate_friction_torque('joint1')
-        
-        # 修正：位置命令にはJoint1を含めず、完全にサーボの力を抜く
+        # ★【核心の修正】joint1を外さず、現在の角度(current_q)をそのままオウム返しにして送る
+        # これによりGazeboの関節サーボの突っ張りが消滅し、外力（内部モーメント）で動くようになります
         self._send_position_command({
+            'joint1': self.current_q['joint1'],
             'joint2': self.current_q['joint2'],
             'joint3': self.current_q['joint3']
         })
-        # トルク命令側にのみJoint1を流す
-        self._send_effort_command({'joint1': tau_fric})
         
+        # C++側に計算用駆動モーメントを流し、空力駆動を誘発させる
         tau_des = self._calculate_target_moment('joint1')
         self._send_internal_moment_command(0, tau_des)
         
@@ -286,18 +257,16 @@ class HydrusXiDeformationSequencer:
             self.step_start_time = rospy.Time.now()
     
     def _step_joint3_deform(self):
-        """Step 4: Joint 3 の空力変形"""
+        """Step 4: Joint 3 の空力変形（★仮想脱力ロジック適用）"""
         if self.control_mode['joint3'] != ControlState.UNLOCKED:
             self._set_control_mode('joint3', ControlState.UNLOCKED)
         
-        tau_fric = self._calculate_friction_torque('joint3')
-        
-        # 修正：位置命令にはJoint3を含めない
+        # ★【核心の修正】joint3に現在の角度をオウム返しし、ロックを解除
         self._send_position_command({
             'joint1': self.current_q['joint1'],
-            'joint2': self.current_q['joint2']
+            'joint2': self.current_q['joint2'],
+            'joint3': self.current_q['joint3']
         })
-        self._send_effort_command({'joint3': tau_fric})
         
         tau_des = self._calculate_target_moment('joint3')
         self._send_internal_moment_command(2, tau_des)
@@ -315,8 +284,10 @@ class HydrusXiDeformationSequencer:
         """Step 5: Joint 2 のサーボ変形"""
         angle_diff = self._get_angle_difference(self.joint2_current_target, self.target_q['joint2'])
         if abs(angle_diff) > JOINT2_RAMP_RATE:
-            if angle_diff > 0: self.joint2_current_target += JOINT2_RAMP_RATE
-            else: self.joint2_current_target -= JOINT2_RAMP_RATE
+            if angle_diff > 0:
+                self.joint2_current_target += JOINT2_RAMP_RATE
+            else:
+                self.joint2_current_target -= JOINT2_RAMP_RATE
         else:
             self.joint2_current_target = self.target_q['joint2']
         
@@ -405,7 +376,7 @@ def main():
                 sequencer.update_target_angles(angles[0], angles[1], angles[2])
                 
             except ValueError:
-                print("⚠️ [入力エラー] 有有効な数値を入力してください。")
+                print("⚠️ [入力エラー] 有効な数値を入力してください。")
             except KeyboardInterrupt:
                 break
         else:
