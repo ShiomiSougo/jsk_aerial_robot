@@ -34,7 +34,7 @@ class SequenceStep(Enum):
     COMPLETE = 6                  # 完了
 
 # パラメータ（調整可能）
-FRICTION_COEFF = 0.1             # 摩擦係数 [N*m*s/rad]
+FRICTION_COEFF = 0.01             # 摩擦係数 [N*m*s/rad]
 ANGLE_ERROR_THRESHOLD = 0.05     # 角度誤差閾値 [rad]
 JOINT2_RAMP_RATE = 0.01          # Joint 2 スロープ速度 [rad/loop]
 
