@@ -192,7 +192,7 @@ void HydrusXiUnderActuatedNavigator::initialize(ros::NodeHandle nh, ros::NodeHan
 
   rosParamInit();
 
-  gimbal_ctrl_pub = nh_.advertise<sensor_msgs::JointState>("gimbals_ctrl", 1);
+  gimbal_ctrl_pub_ = nh_.advertise<sensor_msgs::JointState>("gimbals_ctrl", 1);
 
   // 内部モーメント制御の初期化
   target_joint_index_ = -1;
