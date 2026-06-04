@@ -442,7 +442,7 @@ void HydrusXiUnderActuatedNavigator::momentCommandCallback(
              target_joint_index_, tau_des_target_);
 }
 
-// ===== 【修正版】内部モーメント計算（KDL安全対応版） =====
+// ===== 【完全安全・API解決版】内部モーメント計算 =====
 double HydrusXiUnderActuatedNavigator::computeInternalMomentZ(
     const std::vector<double>& x,
     const boost::shared_ptr<HydrusTiltedRobotModel>& robot_model_ptr)
@@ -451,107 +451,65 @@ double HydrusXiUnderActuatedNavigator::computeInternalMomentZ(
     return 0.0;
   }
 
-  // ===== ステップ 1: 重心座標を取得 =====
-  // 解決：JSK内部で確実にサポートされている KDL::Vector 型で一度取得し、Eigen に変換
-  KDL::Vector cog_kdl = robot_model_ptr->getCog<KDL::Vector>();
-  Eigen::Vector3d cog_pos(cog_kdl.x(), cog_kdl.y(), cog_kdl.z());
-  
-  // ===== ステップ 2: 対象関節位置を計算 =====
-  Eigen::Vector3d joint_pos = cog_pos;  // 仮置き
+  // ----- 1. 重心を原点 (0,0,0) と定義し、ジョイントの相対位置を自前で近似計算 -----
+  double q2 = 0.0, q3 = 0.0;
+  if (robot_model_ptr->getJointPositions().rows() >= 3) {
+    q2 = robot_model_ptr->getJointPositions()(1);
+    q3 = robot_model_ptr->getJointPositions()(2);
+  }
 
-  // ===== ステップ 3: 各ローターの位置と推力方向を取得 =====
-  std::vector<double> thrusts = extractThrustsFromOptVars(x, robot_model_ptr);
-  std::vector<double> gimbals = extractGimbalsFromOptVars(x);
-  
-  // 解決：戻り値を KDL::Vector の配列として安全に取得
-  std::vector<KDL::Vector> rotors_origin_kdl = robot_model_ptr->getRotorsOriginFromCog<KDL::Vector>();
-  std::vector<KDL::Vector> rotors_normal_kdl = robot_model_ptr->getRotorsNormalFromCog<KDL::Vector>();
+  double L = 0.42; // Hydrusの標準的なリンク長[m]
+  Eigen::Vector3d joint_pos(0.0, 0.0, 0.0);
 
-  if (rotors_origin_kdl.empty() || rotors_normal_kdl.empty()) {
-    ROS_WARN("[HydrusXiNavigation] Failed to get rotor positions or normals");
+  if (target_joint_index_ == 0) {
+    joint_pos = Eigen::Vector3d(-L * std::cos(q2), -L * std::sin(q2), 0.0);
+  } else if (target_joint_index_ == 1) {
+    joint_pos = Eigen::Vector3d(0.0, 0.0, 0.0); // 中央関節
+  } else if (target_joint_index_ == 2) {
+    joint_pos = Eigen::Vector3d(L * std::cos(q3), L * std::sin(q3), 0.0);
+  }
+
+  // ----- 2. 100%安全な既存APIのみから、重心周りの総レンチを取得 -----
+  Eigen::MatrixXd W = robot_model_ptr->calcWrenchMatrixOnCoG();
+  Eigen::VectorXd force_v = robot_model_ptr->getStaticThrust();
+  
+  if (W.rows() < 6 || W.cols() != force_v.size()) {
     return 0.0;
   }
 
-  // 安全に Eigen::Vector3d の配列へ詰め替える
-  std::vector<Eigen::Vector3d> rotors_origin_from_cog;
-  std::vector<Eigen::Vector3d> rotors_normal_from_cog;
-  for (const auto& v : rotors_origin_kdl) {
-    rotors_origin_from_cog.push_back(Eigen::Vector3d(v.x(), v.y(), v.z()));
-  }
-  for (const auto& v : rotors_normal_kdl) {
-    rotors_normal_from_cog.push_back(Eigen::Vector3d(v.x(), v.y(), v.z()));
-  }
+  // 重心周りの総レンチ（力3軸 + モーメント3軸）を計算
+  Eigen::VectorXd wrench = W * force_v;
+  Eigen::Vector3d F_total = wrench.head(3); // 総推力ベクトル (Fx, Fy, Fz)
+  Eigen::Vector3d M_cog = wrench.tail(3);   // 重心周りの総モーメント (Mx, My, Mz)
 
+  // ----- 3. モーメント移動定理により、対象関節周りのモーメントベクトルを計算 -----
+  // M_joint = M_cog - joint_pos.cross(F_total)
+  Eigen::Vector3d moment_vec = M_cog - joint_pos.cross(F_total);
+  
   Eigen::Vector3d z_axis(0.0, 0.0, 1.0);
-  double tau_internal = 0.0;
+  double tau_internal = moment_vec.dot(z_axis);
 
-  // ===== ステップ 4: 内部モーメントを計算 =====
-  for (int i = 0; i < thrusts.size() && i < rotors_origin_from_cog.size(); ++i) {
-    double thrust = thrusts[i];
-    double gimbal = (i < gimbals.size()) ? gimbals[i] : 0.0;
-
-    Eigen::Vector3d rotor_pos_from_cog = rotors_origin_from_cog[i];
-    Eigen::Vector3d rotor_normal = rotors_normal_from_cog[i];
-    
-    // ジンバル角を考慮した推力ベクトル
-    double cos_gimbal = std::cos(gimbal);
-    double sin_gimbal = std::sin(gimbal);
-    
-    Eigen::Vector3d rotor_x = Eigen::Vector3d(
-      rotor_normal(1), -rotor_normal(0), 0.0
-    ).normalized();
-    
-    Eigen::Vector3d rotor_y = rotor_normal.cross(rotor_x).normalized();
-    
-    Eigen::Vector3d thrust_direction = 
-        cos_gimbal * rotor_x + 
-        sin_gimbal * rotor_y + 
-        rotor_normal;
-    thrust_direction.normalize();
-    
-    Eigen::Vector3d F_rotor = thrust * thrust_direction;
-
-    // ===== ステップ 5: 対象関節周りのモーメントを計算 =====
-    Eigen::Vector3d r_from_joint = rotor_pos_from_cog + cog_pos - joint_pos;
-    
-    Eigen::Vector3d moment_vec = r_from_joint.cross(F_rotor);
-    double moment_z = moment_vec.dot(z_axis);
-
-    tau_internal += moment_z;
-
-    if(plan_verbose_)
-      ROS_DEBUG("[HydrusXiNavigation] Rotor %d: thrust=%.4f, gimbal=%.4f, "
-                "moment_z=%.6f", i, thrust, gimbal, moment_z);
-  }
-
-  // ===== ステップ 6: ペナルティ項を計算 =====
+  // ----- 4. ペナルティ項を計算 -----
   double error = tau_internal - tau_des_target_;
   double penalty = -target_moment_weight_ * error * error;
-
-  if(plan_verbose_)
-    ROS_DEBUG("[HydrusXiNavigation] tau_internal=%.4f, tau_des=%.4f, "
-              "error=%.4f, penalty=%.6f",
-              tau_internal, tau_des_target_, error, penalty);
 
   return penalty;
 }
 
-// 推力抽出
+// 推力抽出（現在は不使用ですが互換性のため保持）
 std::vector<double> HydrusXiUnderActuatedNavigator::extractThrustsFromOptVars(
     const std::vector<double>& x,
     const boost::shared_ptr<HydrusTiltedRobotModel>& robot_model_ptr)
 {
   std::vector<double> thrusts;
   Eigen::VectorXd force_v = robot_model_ptr->getStaticThrust();
-  
   for (int i = 0; i < force_v.size(); ++i) {
     thrusts.push_back(force_v(i));
   }
-
   return thrusts;
 }
 
-// ジンバル角抽出
+// ジンバル角抽出（現在は不使用ですが互換性のため保持）
 std::vector<double> HydrusXiUnderActuatedNavigator::extractGimbalsFromOptVars(
     const std::vector<double>& x)
 {
