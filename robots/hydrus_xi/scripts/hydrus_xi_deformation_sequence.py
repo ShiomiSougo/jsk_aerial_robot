@@ -160,7 +160,7 @@ class HydrusXiDeformationSequencer:
         angle_diff = self._get_angle_difference(self.current_q[joint_name], self.target_q[joint_name])
         
         # 👈 指令していただいた通り、プロペラのゲインをマイルドに手加減 (3.0 -> 0.2)
-        P_GAIN = 0.15  
+        P_GAIN = 0.2  
         # 👈 ゲインの低下に合わせて、最低駆動モーメントの底上げ量もスケールダウン (0.5 -> 0.01)
         MIN_DRIVE_TORQUE = 0.025  
         
