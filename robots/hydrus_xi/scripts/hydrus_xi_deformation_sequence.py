@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 
 """
-Hydrus-Xi 連続変形シーケンス実行スクリプト（変形時サーボ完全脱力・トルク指定版）
+Hydrus-Xi 連続変形シーケンス実行スクリプト（ジンバル能動チルト・サーボ脱力協調版）
 
 使用例:
   python hydrus_xi_deformation_sequence.py 0.3 -0.4 -0.2
@@ -31,7 +31,7 @@ class SequenceStep(Enum):
 # パラメータ（調整可能）
 ANGLE_ERROR_THRESHOLD = 0.05     # 角度誤差閾値 [rad]
 # 変形を非常にマイルドかつ滑らかにするため、スロープ速度を最適な値に調整 [rad/loop]
-JOINT_RAMP_RATE = 0.003          
+JOINT_RAMP_RATE = 0.001          
 
 STEP_DURATIONS = {
     SequenceStep.INIT: 2.0,                    # [秒] 初期待機
@@ -140,43 +140,64 @@ class HydrusXiDeformationSequencer:
     
     def _send_mixed_torque_position_command(self):
         """
-        🛠️ 【核心部分】現在のステップに応じて、位置指令とトルク指定を混在させてパブリッシュする
+        🛠️ 【大幅改造】ステップに応じてジンバル角度を能動オフセットし、関節の脱力と排他制御を行う
         """
         msg = JointState()
         msg.header.stamp = rospy.Time.now()
         
-        # 関節ごとに位置命令か、直接トルク指定かを切り替える
+        # 💡 【パラメータ】関節を押し曲げるためにジンバルをどれくらい内/外に傾けるか [rad]
+        # 最初は 0.1 〜 0.25 rad (約5〜15度) 程度で推力の逃げを確認してください
+        GIMBAL_TILT_AMOUNT = 0.20  
+
+        # 1. まずジンバル1〜4の指令値をビルド
+        for g_idx in range(1, 5):
+            msg.name.append("gimbal{}".format(g_idx))
+            
+            gimbal_angle = 0.0
+            # Joint 1 変形中は、その両脇のローター（例: gimbal1, gimbal2）を傾ける
+            if self.current_step in [SequenceStep.JOINT1_PRETENSION, SequenceStep.JOINT1_DEFORM]:
+                # 目標角度の正負に応じて推力の向く方向を同期
+                direction = math.copysign(1.0, self.target_q['joint1'] - self.current_q['joint1'])
+                if g_idx in [1, 2]:
+                    gimbal_angle = direction * GIMBAL_TILT_AMOUNT
+                    
+            # Joint 3 変形中は、その両脇のローター（例: gimbal3, gimbal4）を傾ける
+            elif self.current_step in [SequenceStep.JOINT3_PRETENSION, SequenceStep.JOINT3_DEFORM]:
+                direction = math.copysign(1.0, self.target_q['joint3'] - self.current_q['joint3'])
+                if g_idx in [3, 4]:
+                    gimbal_angle = direction * GIMBAL_TILT_AMOUNT
+
+            msg.position.append(gimbal_angle)
+            msg.velocity.append(0.0)
+            msg.effort.append(0.0)
+        
+        # 2. 次に関節1〜3の指令値をビルド
         for joint_name in ['joint1', 'joint2', 'joint3']:
             msg.name.append(joint_name)
             
-            # --- パターンA: Joint 1 が変形中の場合 ---
+            # --- Joint 1 が空力変形中の場合：完全脱力 ＋ 逆方向微小トルク ---
             if joint_name == 'joint1' and self.current_step == SequenceStep.JOINT1_DEFORM:
-                # 位置指令を空(None)にするため、配列に追加しない、またはダミーを弾く（C++互換性のためvelocityも空）
-                # 代わりに effort に直接トルクを書き込む
                 dq = self.current_dq['joint1']
-                # 👈 ご希望通り、完全に0にするのが不安なため、進行逆方向に 0.05 N*m のブレーキトルクを印加
-                # 動いていない(dq=0)ときは 0.0、動いているときは動く方向と逆向きに 0.05
                 torque_cmd = -math.copysign(0.01, dq) if abs(dq) > 0.01 else 0.0
                 
-                msg.position.append(float('nan')) # C++側のインターフェースがNAN、あるいは空配列判定するための処理
+                msg.position.append(float('nan')) 
                 msg.velocity.append(0.0)
                 msg.effort.append(torque_cmd)
                 
-            # --- パターンB: Joint 3 が変形中の場合 ---
+            # --- Joint 3 が空力変形中の場合：完全脱力 ＋ 逆方向微小トルク ---
             elif joint_name == 'joint3' and self.current_step == SequenceStep.JOINT3_DEFORM:
                 dq = self.current_dq['joint3']
-                # 👈 同様に、joint3の変形時も進行逆方向に 0.05 N*m のブレーキトルクを指定
                 torque_cmd = -math.copysign(0.01, dq) if abs(dq) > 0.01 else 0.0
                 
                 msg.position.append(float('nan'))
                 msg.velocity.append(0.0)
                 msg.effort.append(torque_cmd)
                 
-            # --- パターンC: 通常状態（位置をガチッと保持、またはサーボで変形させる場合） ---
+            # --- 通常状態（位置をPIDでサーボロック） ---
             else:
                 msg.position.append(self.joint_targets[joint_name])
                 msg.velocity.append(0.0)
-                msg.effort.append(0.0) # 位置制御モードの時はeffortは0固定
+                msg.effort.append(0.0)
                 
         self.joints_ctrl_pub.publish(msg)
 
@@ -189,15 +210,15 @@ class HydrusXiDeformationSequencer:
     def _calculate_target_moment(self, joint_name):
         angle_diff = self._get_angle_difference(self.current_q[joint_name], self.target_q[joint_name])
         
-        P_GAIN =  1.0 
-        MIN_DRIVE_TORQUE = 0.5  
+        # 💡 ジンバルチルトによる推進力を得たため、モーメントゲインを少し高めに戻して
+        # プロペラが確実に風を横に蹴り出すように調整します。
+        P_GAIN = 0.5  
+        MIN_DRIVE_TORQUE = 0.15  
         
         tau_des = P_GAIN * angle_diff
         if abs(tau_des) < MIN_DRIVE_TORQUE and abs(angle_diff) > ANGLE_ERROR_THRESHOLD:
             tau_des = math.copysign(MIN_DRIVE_TORQUE, angle_diff)
             
-        # 💡 Python側でのバーチャルな引きずり摩擦(CONST_FRICTION_TORQUE)は、
-        # 今回から本物のサーボ出力へタスクをバトンタッチしたため、ここは 0.0 で固定します。
         return tau_des
     
     # ======================== ステップ実行関数 ========================
@@ -219,7 +240,7 @@ class HydrusXiDeformationSequencer:
             self.step_start_time = rospy.Time.now()
     
     def _step_joint1_pretension(self):
-        """Step 1: Joint 1 の予張力生成"""
+        """Step 1: Joint 1 の予張力生成（ここでジンバル1, 2が能動的に傾き始める）"""
         self._send_mixed_torque_position_command()
         
         tau_des = self._calculate_target_moment('joint1')
@@ -232,9 +253,7 @@ class HydrusXiDeformationSequencer:
             self.step_start_time = rospy.Time.now()
     
     def _step_joint1_deform(self):
-        """Step 2: Joint 1 の協調空力変形（位置指令を放棄し、直接トルクモードに遷移）"""
-        # ※サーボ位置命令は放棄されていますが、内部の目標ターゲットは
-        # シーケンスの同期（完了判定）のために内部計算として裏で動かし続けます
+        """Step 2: Joint 1 の協調空力変形（サーボ脱力 ＋ ジンバル推進による横押し）"""
         angle_diff = self._get_angle_difference(self.joint_targets['joint1'], self.target_q['joint1'])
         if abs(angle_diff) > JOINT_RAMP_RATE:
             if angle_diff > 0: self.joint_targets['joint1'] += JOINT_RAMP_RATE
@@ -242,13 +261,11 @@ class HydrusXiDeformationSequencer:
         else:
             self.joint_targets['joint1'] = self.target_q['joint1']
         
-        # 🛠️ トルク指令と位置指令を混在させて送信
         self._send_mixed_torque_position_command()
         
         tau_des = self._calculate_target_moment('joint1')
         self._send_internal_moment_command(0, tau_des)
         
-        # 誤差判定は、プロペラに押されて勝手に動いている本物のエンコーダ角度(current_q)から直接計算
         angle_error = abs(self._get_angle_difference(self.current_q['joint1'], self.target_q['joint1']))
         if angle_error <= ANGLE_ERROR_THRESHOLD and self.joint_targets['joint1'] == self.target_q['joint1']:
             rospy.loginfo("[HydrusXiSequencer] Joint 1 reached target angle. Locking joint with position control.")
@@ -257,7 +274,7 @@ class HydrusXiDeformationSequencer:
             self.step_start_time = rospy.Time.now()
     
     def _step_joint3_pretension(self):
-        """Step 3: Joint 3 の予張力生成"""
+        """Step 3: Joint 3 の予張力生成（ここでジンバル3, 4が能動的に傾き始める）"""
         self._send_mixed_torque_position_command()
         
         tau_des = self._calculate_target_moment('joint3')
@@ -270,7 +287,7 @@ class HydrusXiDeformationSequencer:
             self.step_start_time = rospy.Time.now()
     
     def _step_joint3_deform(self):
-        """Step 4: Joint 3 の協調空力変形（位置指令を放棄し、直接トルクモードに遷移）"""
+        """Step 4: Joint 3 の協調空力変形（サーボ脱力 ＋ ジンバル推進による横押し）"""
         angle_diff = self._get_angle_difference(self.joint_targets['joint3'], self.target_q['joint3'])
         if abs(angle_diff) > JOINT_RAMP_RATE:
             if angle_diff > 0: self.joint_targets['joint3'] += JOINT_RAMP_RATE
@@ -291,7 +308,7 @@ class HydrusXiDeformationSequencer:
             self.step_start_time = rospy.Time.now()
     
     def _step_joint2_servo(self):
-        """Step 5: Joint 2 のサーボ変形（この関節は通常通りサーボのパワーで動かす）"""
+        """Step 5: Joint 2 のサーボ変形（すべてのジンバルは0に戻り、通常サーボ駆動）"""
         angle_diff = self._get_angle_difference(self.joint_targets['joint2'], self.target_q['joint2'])
         if abs(angle_diff) > JOINT_RAMP_RATE:
             if angle_diff > 0: self.joint_targets['joint2'] += JOINT_RAMP_RATE
@@ -383,7 +400,7 @@ def main():
                 sequencer.update_target_angles(angles[0], angles[1], angles[2])
                 
             except ValueError:
-                print("⚠️ [入力エラー] 有効な数値を入力してください。")
+                print("⚠️ [入力エラー] 有有効な数値を入力してください。")
             except KeyboardInterrupt:
                 break
         else:
