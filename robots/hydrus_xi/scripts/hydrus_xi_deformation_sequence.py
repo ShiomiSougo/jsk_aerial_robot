@@ -160,9 +160,9 @@ class HydrusXiDeformationSequencer:
         angle_diff = self._get_angle_difference(self.current_q[joint_name], self.target_q[joint_name])
         
         # 👈 指令していただいた通り、プロペラのゲインをマイルドに手加減 (3.0 -> 0.2)
-        P_GAIN = 0.2  
+        P_GAIN = 0.15  
         # 👈 ゲインの低下に合わせて、最低駆動モーメントの底上げ量もスケールダウン (0.5 -> 0.01)
-        MIN_DRIVE_TORQUE = 0.05  
+        MIN_DRIVE_TORQUE = 0.025  
         
         # 1. 本来、変形（追従）させるためにプロペラに必要な目標位置駆動モーメント
         tau_des = P_GAIN * angle_diff
@@ -175,7 +175,7 @@ class HydrusXiDeformationSequencer:
         if abs(dq) > 0.01:  # 微小なセンサーノイズを弾くための不感帯
             
             # 👈 指令していただいた通り、一定摩擦トルクを 0.1 N*m に設定
-            CONST_FRICTION_TORQUE = 0.01  
+            CONST_FRICTION_TORQUE = 0.0  
             
             # 関節の動いている方向（dqの符号）とは「逆向き」に引きずる摩擦力を計算
             # dq > 0（正転）なら -0.1、dq < 0（逆転）なら +0.1
