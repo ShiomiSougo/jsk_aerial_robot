@@ -31,7 +31,7 @@ class SequenceStep(Enum):
 # パラメータ（調整可能）
 ANGLE_ERROR_THRESHOLD = 0.05     # 角度誤差閾値 [rad]
 # 変形を非常にマイルドかつ滑らかにするため、スロープ速度を最適な値に調整 [rad/loop]
-JOINT_RAMP_RATE = 0.0015          
+JOINT_RAMP_RATE = 0.001          
 
 STEP_DURATIONS = {
     SequenceStep.INIT: 2.0,                    # [秒] 初期待機
