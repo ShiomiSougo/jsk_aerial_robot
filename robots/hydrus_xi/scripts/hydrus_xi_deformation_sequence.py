@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 
 """
-Hydrus-Xi 連続変形シーケンス実行スクリプト（時間初期化ガード・バグ完全消去版）
+Hydrus-Xi 連続変形シーケンス実行スクリプト（ジャミング風一定摩擦再現・マイルド設定版）
 
 使用例:
   python hydrus_xi_deformation_sequence.py 0.3 -0.4 -0.2
@@ -158,12 +158,34 @@ class HydrusXiDeformationSequencer:
     
     def _calculate_target_moment(self, joint_name):
         angle_diff = self._get_angle_difference(self.current_q[joint_name], self.target_q[joint_name])
-        P_GAIN = 3.0  
-        MIN_DRIVE_TORQUE = 0.5  
         
+        # 👈 指令していただいた通り、プロペラのゲインをマイルドに手加減 (3.0 -> 0.2)
+        P_GAIN = 0.2  
+        # 👈 ゲインの低下に合わせて、最低駆動モーメントの底上げ量もスケールダウン (0.5 -> 0.01)
+        MIN_DRIVE_TORQUE = 0.05  
+        
+        # 1. 本来、変形（追従）させるためにプロペラに必要な目標位置駆動モーメント
         tau_des = P_GAIN * angle_diff
         if abs(tau_des) < MIN_DRIVE_TORQUE and abs(angle_diff) > ANGLE_ERROR_THRESHOLD:
             tau_des = math.copysign(MIN_DRIVE_TORQUE, angle_diff)
+            
+        # ==================== 🛠️ 【ジャミング関節の一定摩擦モデル】 ====================
+        # 2. 変形時（動いている時）のみ、回転方向とは「逆向き」に一定のトルクを出力する
+        dq = self.current_dq[joint_name]
+        if abs(dq) > 0.01:  # 微小なセンサーノイズを弾くための不感帯
+            
+            # 👈 指令していただいた通り、一定摩擦トルクを 0.1 N*m に設定
+            CONST_FRICTION_TORQUE = 0.01  
+            
+            # 関節の動いている方向（dqの符号）とは「逆向き」に引きずる摩擦力を計算
+            # dq > 0（正転）なら -0.1、dq < 0（逆転）なら +0.1
+            friction_torque = -math.copysign(CONST_FRICTION_TORQUE, dq)
+            
+            # 3. 総モーメント命令 ＝ 位置追従トルク − 摩擦トルク
+            # （プロペラ側から見ると、摩擦の邪魔が入るため、より強い推力差が必要になる現象を数式上で再現）
+            tau_des = tau_des - friction_torque
+        # ======================================================================
+            
         return tau_des
     
     # ======================== ステップ実行関数 ========================
@@ -254,7 +276,7 @@ class HydrusXiDeformationSequencer:
             self.step_start_time = rospy.Time.now()
     
     def _step_joint2_servo(self):
-        """Step 5: Joint 2 のサーボ変形（★JOINT2_RAMP_RATEのエラーを完全消去）"""
+        """Step 5: Joint 2 のサーボ変形"""
         angle_diff = self._get_angle_difference(self.joint_targets['joint2'], self.target_q['joint2'])
         if abs(angle_diff) > JOINT_RAMP_RATE:
             if angle_diff > 0: self.joint_targets['joint2'] += JOINT_RAMP_RATE
@@ -285,7 +307,6 @@ class HydrusXiDeformationSequencer:
     
     def _control_loop(self, event):
         try:
-            # 起動直後の不正なタイムスタンプ（0.0）を弾き、有効な時間が来てからスタートさせるガードロジック
             current_time = rospy.Time.now()
             if current_time.is_zero():
                 return
