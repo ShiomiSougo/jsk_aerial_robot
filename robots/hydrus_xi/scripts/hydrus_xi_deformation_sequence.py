@@ -165,9 +165,9 @@ class HydrusXiDeformationSequencer:
         angle_diff_to_final = self._get_angle_difference(self.current_q[joint_name], self.target_q[joint_name])
         
         # 👈 摩擦やスタックを叩き潰すため、プロペラのゲインを10倍(3.0)に引き上げます
-        P_GAIN = 3.0  
+        P_GAIN = 1.0  
         # 👈 スタックの壁を確実に超えるための、プロペラ風圧の最低足切りトルク [N*m]
-        MIN_DRIVE_TORQUE = 0.50  
+        MIN_DRIVE_TORQUE = 0.25  
         
         tau_des = P_GAIN * angle_diff_to_final
         if abs(tau_des) < MIN_DRIVE_TORQUE and abs(angle_diff_to_final) > ANGLE_ERROR_THRESHOLD:
