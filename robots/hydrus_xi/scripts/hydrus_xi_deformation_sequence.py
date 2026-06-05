@@ -189,8 +189,8 @@ class HydrusXiDeformationSequencer:
     def _calculate_target_moment(self, joint_name):
         angle_diff = self._get_angle_difference(self.current_q[joint_name], self.target_q[joint_name])
         
-        P_GAIN = 0.5  
-        MIN_DRIVE_TORQUE = 0.1  
+        P_GAIN =  1.0 
+        MIN_DRIVE_TORQUE = 0.5  
         
         tau_des = P_GAIN * angle_diff
         if abs(tau_des) < MIN_DRIVE_TORQUE and abs(angle_diff) > ANGLE_ERROR_THRESHOLD:
