@@ -156,7 +156,7 @@ class HydrusXiDeformationSequencer:
                 dq = self.current_dq['joint1']
                 # 👈 ご希望通り、完全に0にするのが不安なため、進行逆方向に 0.05 N*m のブレーキトルクを印加
                 # 動いていない(dq=0)ときは 0.0、動いているときは動く方向と逆向きに 0.05
-                torque_cmd = -math.copysign(0.05, dq) if abs(dq) > 0.01 else 0.0
+                torque_cmd = -math.copysign(0.01, dq) if abs(dq) > 0.01 else 0.0
                 
                 msg.position.append(float('nan')) # C++側のインターフェースがNAN、あるいは空配列判定するための処理
                 msg.velocity.append(0.0)
@@ -166,7 +166,7 @@ class HydrusXiDeformationSequencer:
             elif joint_name == 'joint3' and self.current_step == SequenceStep.JOINT3_DEFORM:
                 dq = self.current_dq['joint3']
                 # 👈 同様に、joint3の変形時も進行逆方向に 0.05 N*m のブレーキトルクを指定
-                torque_cmd = -math.copysign(0.05, dq) if abs(dq) > 0.01 else 0.0
+                torque_cmd = -math.copysign(0.01, dq) if abs(dq) > 0.01 else 0.0
                 
                 msg.position.append(float('nan'))
                 msg.velocity.append(0.0)
