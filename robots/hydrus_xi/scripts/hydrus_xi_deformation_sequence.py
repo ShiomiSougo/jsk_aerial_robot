@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 
 """
-Hydrus-Xi 連続変形シーケンス実行スクリプト（現在地オウム返し・一定摩擦完全同調版）
+Hydrus-Xi 連続変形シーケンス実行スクリプト（意図的デッドバンドオフセット・一定摩擦再現版）
 
 使用例:
   python hydrus_xi_deformation_sequence.py 0.3 -0.4 -0.2
@@ -70,7 +70,6 @@ class HydrusXiDeformationSequencer:
         self.step_start_time = None  # 時間初期化バグを防ぐため、最初は None
         
         # ===== ROS パブリッシャ =====
-        # 💡 通信安全性を最優先するため、実績のある通常の位置制御トピック1本に絞ります
         self.joints_ctrl_pub = rospy.Publisher(
             '/hydrus_xi/joints_ctrl',
             JointState,
@@ -141,43 +140,50 @@ class HydrusXiDeformationSequencer:
     
     def _send_synchronized_command(self):
         """
-        🛠️ 【新・核心関数】
-        配列サイズエラー（C++クラッシュ）を200%防ぐため、常に3関節すべての名前を送信。
-        変形中の関節のみ「目標位置＝現在位置」にすることで、C++側の位置PIDを物理的に無効化（脱力）する。
+        🛠️ 【位置オフセットによる擬似一定摩擦生成ロジック】
+        C++がeffortをGazeboへ横流ししない制限を突破するため、位置指令（position）の数値を意図的にズラす。
         """
         msg = JointState()
         msg.header.stamp = rospy.Time.now()
         
+        # 💡 0.05 N*m 相当の摩擦ブレーキを発生させるための、意図的な「角度の遅れ（ズレ）」量 [rad]
+        # Gazebo側のサーボPIDゲインに応じて、実験しながら 0.005 〜 0.03 程度の間で微調整してください。
+        FRICTION_ANGLE_OFFSET = 0.015 
+        
         for joint_name in ['joint1', 'joint2', 'joint3']:
             msg.name.append(joint_name)
             
-            # --- パターンA: Joint 1 が空力変形中の場合（アクティブ脱力＋一定摩擦追加） ---
+            # --- パターンA: Joint 1 が変形ステップ（Step 2）の時 ---
             if joint_name == 'joint1' and self.current_step == SequenceStep.JOINT1_DEFORM:
-                # 💡 目標位置に「現在の生のセンサー角度」をそのまま代入（PIDの入力差分を強制的に0にする）
-                msg.position.append(self.current_q['joint1'])
+                # 最終的な目標に向かって今動いている方向（正回転か負回転か）の符号を取得
+                direction = np.sign(self.target_q['joint1'] - self.current_q['joint1'])
+                
+                # スロープ目標（joint_targets）よりも、進行方向とは「真逆の方向」に意図的にズラした位置命令を作成
+                # これにより、Gazebo内の位置PIDコントローラは「指定スロープより先走っている」と錯覚し、
+                # 進行方向と真逆向き（ブレーキ方向）へ常に一定のトルクを出し続けます
+                spoofed_position = self.joint_targets['joint1'] - direction * FRICTION_ANGLE_OFFSET
+                
+                msg.position.append(spoofed_position)
                 msg.velocity.append(0.0)
+                msg.effort.append(0.0)
                 
-                dq = self.current_dq['joint1']
-                torque_cmd = -math.copysign(0.05, dq) if abs(dq) > 0.01 else 0.0
-                msg.effort.append(torque_cmd)
-                
-            # --- パターンB: Joint 3 が空力変形中の場合（アクティブ脱力＋一定摩擦追加） ---
+            # --- パターンB: Joint 3 が変形ステップ（Step 4）の時 ---
             elif joint_name == 'joint3' and self.current_step == SequenceStep.JOINT3_DEFORM:
-                msg.position.append(self.current_q['joint3'])
+                direction = np.sign(self.target_q['joint3'] - self.current_q['joint3'])
+                spoofed_position = self.joint_targets['joint3'] - direction * FRICTION_ANGLE_OFFSET
+                
+                msg.position.append(spoofed_position)
                 msg.velocity.append(0.0)
+                msg.effort.append(0.0)
                 
-                dq = self.current_dq['joint3']
-                torque_cmd = -math.copysign(0.05, dq) if abs(dq) > 0.01 else 0.0
-                msg.effort.append(torque_cmd)
-                
-            # --- 通常状態（位置をPIDでガチッとサーボロック） ---
+            # --- パターンC: 通常状態（位置をPIDでガチッとサーボロック、またはサーボ変形） ---
             else:
                 msg.position.append(self.joint_targets[joint_name])
                 msg.velocity.append(0.0)
                 msg.effort.append(0.0)
                 
         self.joints_ctrl_pub.publish(msg)
-
+        
     def _send_internal_moment_command(self, joint_idx, tau_des):
         """C++のフライトコントローラに内部モーメント補償を送信"""
         msg = Float64MultiArray()
@@ -188,9 +194,9 @@ class HydrusXiDeformationSequencer:
         """【フィードフォワード先読み増幅モデル】"""
         angle_diff_to_final = self._get_angle_difference(self.current_q[joint_name], self.target_q[joint_name])
         
-        # サーボの突っ張りが消えたため、プロペラのパワーを最適な強さに再調整
+        # 擬似的な位置ズレブレーキをプロペラの強力な風圧で完全にねじ伏せるためのゲイン調整
         P_GAIN = 1.5  
-        MIN_DRIVE_TORQUE = 0.30  
+        MIN_DRIVE_TORQUE = 0.35  
         
         tau_des = P_GAIN * angle_diff_to_final
         if abs(tau_des) < MIN_DRIVE_TORQUE and abs(angle_diff_to_final) > ANGLE_ERROR_THRESHOLD:
@@ -238,7 +244,6 @@ class HydrusXiDeformationSequencer:
         else:
             self.joint_targets['joint1'] = self.target_q['joint1']
         
-        # 3関節同期パブリッシュを実行
         self._send_synchronized_command()
         
         tau_des = self._calculate_target_moment('joint1')
