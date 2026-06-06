@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 
 """
-Hydrus-Xi 連続変形シーケンス実行スクリプト（意図的デッドバンドオフセット・一定摩擦再現版）
+Hydrus-Xi 連続変形シーケンス実行スクリプト（C++フラグ連動・変形時一定摩擦完全固定版）
 
 使用例:
   python hydrus_xi_deformation_sequence.py 0.3 -0.4 -0.2
@@ -140,43 +140,35 @@ class HydrusXiDeformationSequencer:
     
     def _send_synchronized_command(self):
         """
-        🛠️ 【位置オフセットによる擬似一定摩擦生成ロジック】
-        C++がeffortをGazeboへ横流ししない制限を突破するため、位置指令（position）の数値を意図的にズラす。
+        🛠️ 【C++連動型・完全排他制御送信関数】
+        配列サイズの一貫性を100%維持しながら、定義された通りの関節の切り替えを実行する。
         """
         msg = JointState()
         msg.header.stamp = rospy.Time.now()
         
-        # 💡 0.05 N*m 相当の摩擦ブレーキを発生させるための、意図的な「角度の遅れ（ズレ）」量 [rad]
-        # Gazebo側のサーボPIDゲインに応じて、実験しながら 0.005 〜 0.03 程度の間で微調整してください。
-        FRICTION_ANGLE_OFFSET = 0.015 
-        
         for joint_name in ['joint1', 'joint2', 'joint3']:
             msg.name.append(joint_name)
             
-            # --- パターンA: Joint 1 が変形ステップ（Step 2）の時 ---
+            # --- ① Joint 1 が空力変形中（Step 2）の時：joint1のみを切り替え、他はそのまま ---
             if joint_name == 'joint1' and self.current_step == SequenceStep.JOINT1_DEFORM:
-                # 最終的な目標に向かって今動いている方向（正回転か負回転か）の符号を取得
-                direction = np.sign(self.target_q['joint1'] - self.current_q['joint1'])
-                
-                # スロープ目標（joint_targets）よりも、進行方向とは「真逆の方向」に意図的にズラした位置命令を作成
-                # これにより、Gazebo内の位置PIDコントローラは「指定スロープより先走っている」と錯覚し、
-                # 進行方向と真逆向き（ブレーキ方向）へ常に一定のトルクを出し続けます
-                spoofed_position = self.joint_targets['joint1'] - direction * FRICTION_ANGLE_OFFSET
-                
-                msg.position.append(spoofed_position)
+                msg.position.append(999.0)  # C++側に位置PID解除・トルク上書きを命令する特殊フラグ
                 msg.velocity.append(0.0)
-                msg.effort.append(0.0)
                 
-            # --- パターンB: Joint 3 が変形ステップ（Step 4）の時 ---
+                # 進行方向（dqの符号）と「真逆の向き」に 0.05 N*m の一定摩擦トルクを算出
+                dq = self.current_dq['joint1']
+                torque_cmd = -math.copysign(0.05, dq) if abs(dq) > 0.01 else 0.0
+                msg.effort.append(torque_cmd)
+                
+            # --- ② Joint 3 が空力変形中（Step 4）の時：joint3のみを切り替え、他はそのまま ---
             elif joint_name == 'joint3' and self.current_step == SequenceStep.JOINT3_DEFORM:
-                direction = np.sign(self.target_q['joint3'] - self.current_q['joint3'])
-                spoofed_position = self.joint_targets['joint3'] - direction * FRICTION_ANGLE_OFFSET
-                
-                msg.position.append(spoofed_position)
+                msg.position.append(999.0)  # 同様に、C++側にフラグを送信
                 msg.velocity.append(0.0)
-                msg.effort.append(0.0)
                 
-            # --- パターンC: 通常状態（位置をPIDでガチッとサーボロック、またはサーボ変形） ---
+                dq = self.current_dq['joint3']
+                torque_cmd = -math.copysign(0.05, dq) if abs(dq) > 0.01 else 0.0
+                msg.effort.append(torque_cmd)
+                
+            # --- ③ 変形時以外、通常状態の関節、および joint2（常に変更なし・位置保持） ---
             else:
                 msg.position.append(self.joint_targets[joint_name])
                 msg.velocity.append(0.0)
@@ -194,7 +186,8 @@ class HydrusXiDeformationSequencer:
         """【フィードフォワード先読み増幅モデル】"""
         angle_diff_to_final = self._get_angle_difference(self.current_q[joint_name], self.target_q[joint_name])
         
-        # 擬似的な位置ズレブレーキをプロペラの強力な風圧で完全にねじ伏せるためのゲイン調整
+        # C++側で位置PID制御が完全にバイパス（遮断）されるため、
+        # プロペラパワーは摩擦（0.05）をスムーズに押し切れる適切な強さに再設定
         P_GAIN = 1.5  
         MIN_DRIVE_TORQUE = 0.35  
         
