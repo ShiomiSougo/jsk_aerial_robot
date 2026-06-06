@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 
 """
-Hydrus-Xi 連続変形シーケンス実行スクリプト（C++フラグ連動・変形時一定摩擦完全固定版）
+Hydrus-Xi 連続変形シーケンス実行スクリプト（C++条件分岐連動・インデックスバグ完全解消版）
 
 使用例:
   python hydrus_xi_deformation_sequence.py 0.3 -0.4 -0.2
@@ -140,8 +140,9 @@ class HydrusXiDeformationSequencer:
     
     def _send_synchronized_command(self):
         """
-        🛠️ 【C++連動型・完全排他制御送信関数】
-        配列サイズの一貫性を100%維持しながら、定義された通りの関節の切り替えを実行する。
+        🛠️ 【インデックス完全同期・宛先バグ完全解消版】
+        C++側（servo_bridge）での関節順序の誤認を100%防ぐため、
+        常に明示的にnameをセットし、配列サイズを[joint1, joint2, joint3]の固定長にする。
         """
         msg = JointState()
         msg.header.stamp = rospy.Time.now()
@@ -149,17 +150,17 @@ class HydrusXiDeformationSequencer:
         for joint_name in ['joint1', 'joint2', 'joint3']:
             msg.name.append(joint_name)
             
-            # --- ① Joint 1 が空力変形中（Step 2）の時：joint1のみを切り替え、他はそのまま ---
+            # --- ① Joint 1 が空力変形中（Step 2）の時：joint1のみをトルク上書きモードへ、他はそのまま ---
             if joint_name == 'joint1' and self.current_step == SequenceStep.JOINT1_DEFORM:
-                msg.position.append(999.0)  # C++側に位置PID解除・トルク上書きを命令する特殊フラグ
+                msg.position.append(999.0)  # C++側に位置PID解除を伝える特殊フラグ
                 msg.velocity.append(0.0)
                 
-                # 進行方向（dqの符号）と「真逆の向き」に 0.05 N*m の一定摩擦トルクを算出
+                # 進行方向（dqの符号）と「真逆の向き」に 0.05 N*m の一定摩擦トルクを出力
                 dq = self.current_dq['joint1']
                 torque_cmd = -math.copysign(0.05, dq) if abs(dq) > 0.01 else 0.0
                 msg.effort.append(torque_cmd)
                 
-            # --- ② Joint 3 が空力変形中（Step 4）の時：joint3のみを切り替え、他はそのまま ---
+            # --- ② Joint 3 が空力変形中（Step 4）の時：joint3のみをトルク上書きモードへ、他はそのまま ---
             elif joint_name == 'joint3' and self.current_step == SequenceStep.JOINT3_DEFORM:
                 msg.position.append(999.0)  # 同様に、C++側にフラグを送信
                 msg.velocity.append(0.0)
@@ -168,9 +169,9 @@ class HydrusXiDeformationSequencer:
                 torque_cmd = -math.copysign(0.05, dq) if abs(dq) > 0.01 else 0.0
                 msg.effort.append(torque_cmd)
                 
-            # --- ③ 変形時以外、通常状態の関節、および joint2（常に変更なし・位置保持） ---
+            # --- ③ 通常状態の関節、および joint2（常に変更なし・通常位置制御保持） ---
             else:
-                msg.position.append(self.joint_targets[joint_name])
+                msg.position.append(float(self.joint_targets[joint_name]))
                 msg.velocity.append(0.0)
                 msg.effort.append(0.0)
                 
@@ -183,11 +184,13 @@ class HydrusXiDeformationSequencer:
         self.moment_pub.publish(msg)
     
     def _calculate_target_moment(self, joint_name):
-        """【フィードフォワード先読み増幅モデル】"""
+        """
+        🛠️ 【フィードフォワード先読み増幅モデル】
+        C++側で位置PIDブレーキが100%消失したため、プロペラのパワーを
+        一定摩擦（0.05 N*m）をじんわりと押し切れる「超マイルド最適設定」に手加減します。
+        """
         angle_diff_to_final = self._get_angle_difference(self.current_q[joint_name], self.target_q[joint_name])
         
-        # C++側で位置PID制御が完全にバイパス（遮断）されるため、
-        # プロペラパワーは摩擦（0.05）をスムーズに押し切れる適切な強さに再設定
         P_GAIN = 0.2  
         MIN_DRIVE_TORQUE = 0.06  
         
@@ -244,7 +247,7 @@ class HydrusXiDeformationSequencer:
         
         angle_error = abs(self._get_angle_difference(self.current_q['joint1'], self.target_q['joint1']))
         if angle_error <= ANGLE_ERROR_THRESHOLD and self.joint_targets['joint1'] == self.target_q['joint1']:
-            rospy.loginfo("[HydrusXiSequencer] Joint 1 reached target angle. Locking joint.")
+            rospy.loginfo("[HydrusXiSequencer] Joint 1 reached target angle. Locking joint with normal PID.")
             self._send_internal_moment_command(0, 0.0)
             self.current_step = SequenceStep.JOINT3_PRETENSION
             self.step_start_time = rospy.Time.now()
@@ -278,7 +281,7 @@ class HydrusXiDeformationSequencer:
         
         angle_error = abs(self._get_angle_difference(self.current_q['joint3'], self.target_q['joint3']))
         if angle_error <= ANGLE_ERROR_THRESHOLD and self.joint_targets['joint3'] == self.target_q['joint3']:
-            rospy.loginfo("[HydrusXiSequencer] Joint 3 reached target angle. Locking joint.")
+            rospy.loginfo("[HydrusXiSequencer] Joint 3 reached target angle. Locking joint with normal PID.")
             self._send_internal_moment_command(2, 0.0)
             self.current_step = SequenceStep.JOINT2_SERVO
             self.step_start_time = rospy.Time.now()
