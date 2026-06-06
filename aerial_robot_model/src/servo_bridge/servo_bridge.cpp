@@ -358,7 +358,7 @@ void ServoBridge::servoCtrlCallback(const sensor_msgs::JointStateConstPtr& servo
             {
               std_msgs::Float64 msg;
               
-              // 🛠️ 【排他制御分岐定義】Python側から変形フラグ(999.0)が送られてきた場合
+              // 【排他制御分岐定義】Python側から変形フラグ(999.0)が送られてきた場合
               if (servo_ctrl_msg->position[i] > 900.0)
                 {
                   // 位置制御PIDを完全バイパスし、Python側で指定した一定摩擦トルク(effort)を横流しする
@@ -415,7 +415,7 @@ void ServoBridge::servoCtrlCallback(const sensor_msgs::JointStateConstPtr& servo
             {
               std_msgs::Float64 msg;
               
-              // 🛠️ 【高速配信用ブロック側の排他制御定義】同様にフラグチェックを統合
+              // 【高速配信用ブロック側の排他制御定義】同様にフラグチェックを統合
               if (servo_ctrl_msg->position[i] > 900.0)
                 {
                   if (servo_ctrl_msg->effort.size() == servo_ctrl_msg->position.size())
@@ -508,7 +508,7 @@ void ServoBridge::servoTorqueCtrlCallback(const sensor_msgs::JointStateConstPtr&
     }
 
   if (servo_target_torque_pubs_.find(servo_group_name) != servo_target_torque_pubs_.end())
-    torque_pub_topic, servo_target_torque_pubs_[servo_group_name].publish(target_torque_msg);
+    servo_target_torque_pubs_[servo_group_name].publish(target_torque_msg);
   else
     servo_target_torque_pubs_["common"].publish(target_torque_msg);
 }
