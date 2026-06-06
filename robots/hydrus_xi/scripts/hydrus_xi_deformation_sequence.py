@@ -188,8 +188,8 @@ class HydrusXiDeformationSequencer:
         
         # C++側で位置PID制御が完全にバイパス（遮断）されるため、
         # プロペラパワーは摩擦（0.05）をスムーズに押し切れる適切な強さに再設定
-        P_GAIN = 1.5  
-        MIN_DRIVE_TORQUE = 0.35  
+        P_GAIN = 0.2  
+        MIN_DRIVE_TORQUE = 0.06  
         
         tau_des = P_GAIN * angle_diff_to_final
         if abs(tau_des) < MIN_DRIVE_TORQUE and abs(angle_diff_to_final) > ANGLE_ERROR_THRESHOLD:
