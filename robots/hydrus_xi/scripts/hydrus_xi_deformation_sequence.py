@@ -2,7 +2,10 @@
 # -*- coding: utf-8 -*-
 
 """
-Hydrus-Xi 連続変形シーケンス実行スクリプト（バックドライブ同調・シーケンス完全完走版）
+Hydrus-Xi 連続変形シーケンス実行スクリプト（終盤失速防止・動的ゲインブースト版）
+
+使用例:
+  python hydrus_xi_deformation_sequence.py 0.8 -1.0 0.9
 """
 
 import rospy
@@ -75,10 +78,6 @@ class HydrusXiDeformationSequencer:
         return self._normalize_angle(target - current)
 
     def _send_synchronized_command(self):
-        """
-        Jsk標準システムと100%互換を維持する安全な位置送信関数。
-        Gazeboコントローラをバグらせることなく、綺麗にスロープを横流しします。
-        """
         msg = JointState()
         msg.header.stamp = rospy.Time.now()
         for joint_name in ['joint1', 'joint2', 'joint3']:
@@ -95,19 +94,36 @@ class HydrusXiDeformationSequencer:
 
     def _calculate_target_moment(self, joint_name):
         """
-        🛠️ 【バックドライブ専用モーメント増幅モデル】
-        サーボの位置PIDの保持力（引きずり重さ）を、プロペラの力で安全に
-        『ねじ伏せて押し切る』ための最適なゲインバランス
+        🛠️ 【非線形形状変化対応型・動的ゲインブーストモデル】
+        変形の進行（スロープ指令と現在角度の進捗）に合わせて、
+        機体の重力モーメント負荷変化を打ち消すようにプロペラ推力モーメントを増幅する。
         """
+        # 最終ターゲット角度との残差
         angle_diff_to_final = self._get_angle_difference(self.current_q[joint_name], self.target_q[joint_name])
         
-        # サーボと喧嘩しつつ、確実にスロープへ追従させるための黄金比パラメータ
-        P_GAIN = 1.8  
-        MIN_DRIVE_TORQUE = 0.40  
+        # 1. 基礎ゲイン定義
+        P_GAIN_BASE = 1.8
+        MIN_DRIVE_TORQUE_BASE = 0.40
+        
+        # 2. 変形進捗度の計算（0.0: 変形開始 〜 1.0: 変形完了）
+        # 初期のズレ量（Pretension完了時）を分母の基準にする（ゼロ除算防止付き）
+        init_diff = abs(self._get_angle_difference(self.joint_targets[joint_name], self.target_q[joint_name]))
+        progress = 1.0
+        if init_diff > 0.01:
+            current_diff = abs(angle_diff_to_final)
+            progress = max(0.0, min(1.0, 1.0 - (current_diff / init_diff)))
+            
+        # 3. 終盤にかけて非線形にパワーをブースト（progressが1.0に近づくほど補償を強くする）
+        # 指数関数（progressの2乗）を用いることで、終盤の最も重くなるエリアで一気にプロペラを補強
+        boost_factor = 1.0 + 1.2 * (progress ** 2)  # 最大で通常の2.2倍まで自動増幅
+        
+        P_GAIN = P_GAIN_BASE * boost_factor
+        MIN_DRIVE_TORQUE = MIN_DRIVE_TORQUE_BASE * boost_factor
         
         tau_des = P_GAIN * angle_diff_to_final
         if abs(tau_des) < MIN_DRIVE_TORQUE and abs(angle_diff_to_final) > ANGLE_ERROR_THRESHOLD:
             tau_des = math.copysign(MIN_DRIVE_TORQUE, angle_diff_to_final)
+            
         return tau_des
 
     def _step_init(self):
@@ -134,7 +150,6 @@ class HydrusXiDeformationSequencer:
             self.step_start_time = rospy.Time.now()
 
     def _step_joint1_deform(self):
-        # スロープ指令を進行
         angle_diff = self._get_angle_difference(self.joint_targets['joint1'], self.target_q['joint1'])
         if abs(angle_diff) > JOINT_RAMP_RATE:
             self.joint_targets['joint1'] += math.copysign(JOINT_RAMP_RATE, angle_diff)
@@ -145,7 +160,6 @@ class HydrusXiDeformationSequencer:
         tau_des = self._calculate_target_moment('joint1')
         self._send_internal_moment_command(0, tau_des)
         
-        # 💡 スロープ命令が最終ゴールまで確実に到達したことをもって、確実に次へ進める堅牢な判定
         if self.joint_targets['joint1'] == self.target_q['joint1']:
             rospy.loginfo("[HydrusXiSequencer] Joint 1 Deformation Completed -> Step 3")
             self._send_internal_moment_command(0, 0.0)
@@ -173,7 +187,6 @@ class HydrusXiDeformationSequencer:
         tau_des = self._calculate_target_moment('joint3')
         self._send_internal_moment_command(2, tau_des)
         
-        # 💡 同様に、スロープの完了で確実に次へ進める
         if self.joint_targets['joint3'] == self.target_q['joint3']:
             rospy.loginfo("[HydrusXiSequencer] Joint 3 Deformation Completed -> Step 5")
             self._send_internal_moment_command(2, 0.0)
