@@ -29,12 +29,12 @@ class SequenceStep(Enum):
 
 # パラメータ
 ANGLE_ERROR_THRESHOLD = 0.05     # 角度誤差閾値 [rad]
-JOINT_RAMP_RATE_BASE = 0.001     # 基本スロープ速度 [rad/loop]
+JOINT_RAMP_RATE_BASE = 0.005     # 基本スロープ速度 [rad/loop]
 
 # 静定判定用のパラメータ
 STABILIZE_VELOCITY_THRESH = 0.01  # 静定したとみなす角速度の閾値 [rad/s]
 STABILIZE_REQUIRED_LOOPS = 10     # 閾値を連続で下回るべきループ数 (10ループ = 約0.5秒)
-STABILIZE_TIMEOUT = 3.0           # 揺れが収まらなくても次のステップへ進む最大制限時間 [s]
+STABILIZE_TIMEOUT = 4.0           # 揺れが収まらなくても次のステップへ進む最大制限時間 [s]
 
 STEP_DURATIONS = {
     SequenceStep.INIT: 2.0,
@@ -130,7 +130,7 @@ class HydrusXiDeformationSequencer:
         """
         angle_diff_to_final = self._get_angle_difference(self.current_q[joint_name], self.target_q[joint_name])
         
-        P_GAIN = 1.0  # 減速領域でも確実に応答させるため、ゲインを少し高めに設定
+        P_GAIN = 0.8  # 減速領域でも確実に応答させるため、ゲインを少し高めに設定
         MAX_DRIVE_TORQUE_BASE = 0.06  # 通常巡航時の風の最大出力
         
         # 1. 基礎となる目標モーメント命令値
@@ -221,7 +221,7 @@ class HydrusXiDeformationSequencer:
             self.current_step = SequenceStep.JOINT3_PRETENSION
             self.step_start_time = rospy.Time.now()
         elif duration >= STABILIZE_TIMEOUT:
-            rospy.logwarn("[HydrusXiSequencer] ⚠️ 静定待ちタイムアウト (3.0秒経過) 強制的にステップ4へ進みます。")
+            rospy.logwarn("[HydrusXiSequencer] ⚠️ 静定待ちタイムアウト (4.0秒経過) 強制的にステップ4へ進みます。")
             self.current_step = SequenceStep.JOINT3_PRETENSION
             self.step_start_time = rospy.Time.now()
 
@@ -279,7 +279,7 @@ class HydrusXiDeformationSequencer:
             self.current_step = SequenceStep.JOINT2_SERVO
             self.step_start_time = rospy.Time.now()
         elif duration >= STABILIZE_TIMEOUT:
-            rospy.logwarn("[HydrusXiSequencer] ⚠️ 静定待ちタイムアウト (3.0秒経過) 強制的にステップ7へ進みます。")
+            rospy.logwarn("[HydrusXiSequencer] ⚠️ 静定待ちタイムアウト (4.0秒経過) 強制的にステップ7へ進みます。")
             self.current_step = SequenceStep.JOINT2_SERVO
             self.step_start_time = rospy.Time.now()
 
