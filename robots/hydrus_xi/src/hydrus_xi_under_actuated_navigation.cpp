@@ -172,7 +172,7 @@ HydrusXiUnderActuatedNavigator::HydrusXiUnderActuatedNavigator():
     target_joint_index_(-1),
     tau_des_target_(0.0),
     has_moment_command_(false),
-    target_moment_weight_(0.5)
+    target_moment_weight_(0.125)  // 💡 修正：初期の重みの割合を 0.5 から 0.125 へ4分の1に軽減
 {
 }
 
@@ -197,7 +197,7 @@ void HydrusXiUnderActuatedNavigator::initialize(ros::NodeHandle nh, ros::NodeHan
   // 内部モーメント制御の初期化
   target_joint_index_ = -1;
   tau_des_target_ = 0.0;
-  has_moment_command_ = false;
+  has_moment_command = false;
   
   moment_command_sub_ = nh_.subscribe(
       "/hydrus_xi/target_internal_moment",
@@ -419,7 +419,8 @@ void HydrusXiUnderActuatedNavigator::rosParamInit()
   getParam<double>(navi_nh, "fc_t_min_thresh", fc_t_min_thresh_, 2.0);
 
   // 内部モーメント制御の重み
-  getParam<double>(navi_nh, "target_moment_weight", target_moment_weight_, 0.5);
+  // 💡 修正：launchから上書きされなかった場合のデフォルトの重みを 0.5 から 0.125 に変更
+  getParam<double>(navi_nh, "target_moment_weight", target_moment_weight_, 0.125);
   ROS_INFO("[HydrusXiNavigation] target_moment_weight: %.3f", target_moment_weight_);
 }
 
