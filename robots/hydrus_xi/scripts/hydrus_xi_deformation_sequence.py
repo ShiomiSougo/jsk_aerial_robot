@@ -127,8 +127,8 @@ class HydrusXiDeformationSequencer:
         """【全域一定速度マネジメントモデル】"""
         angle_diff_to_final = self._get_angle_difference(self.current_q[joint_name], self.target_q[joint_name])
         
-        P_GAIN = 0.25
-        MAX_DRIVE_TORQUE = 0.1  # 風の最大出力をホールド
+        P_GAIN = 0.2
+        MAX_DRIVE_TORQUE = 0.08  # 風の最大出力をホールド
         
         tau_des = P_GAIN * angle_diff_to_final
         
@@ -264,12 +264,16 @@ class HydrusXiDeformationSequencer:
             rospy.logwarn("[HydrusXiSequencer] ⚠️ 静定待ちタイムアウト (3.0秒経過) 強制的にステップ7へ進みます。")
             self.current_step = SequenceStep.JOINT2_SERVO
             self.step_start_time = rospy.Time.now()
-
     def _step_joint2_servo(self):
+        # 💡 ここに追加！反作用に負けないよう、確定した最終ターゲット angles でバネの基準点をガチガチに固定する
+        self.joint_targets['joint1'] = self.target_q['joint1']
+        self.joint_targets['joint3'] = self.target_q['joint3']
+
+        # （ここから下は、提示していただいた元のコードのままです）
         q1_abs = abs(self.current_q['joint1'])
         q3_abs = abs(self.current_q['joint3'])
         q2_abs = abs(self.current_q['joint2'])
-        
+       
         proximity_to_singularity = max(0.0, min(1.0, 1.0 - (q1_abs + q3_abs + q2_abs) / 2.0))
         
         ramp_reduction_factor = 1.0 - 0.9 * (proximity_to_singularity ** 2)
@@ -279,6 +283,7 @@ class HydrusXiDeformationSequencer:
         if abs(angle_diff) > dynamic_ramp_rate:
             self.joint_targets['joint2'] += math.copysign(dynamic_ramp_rate, angle_diff)
         else:
+            # 💡 消えていたここの1行を復活させました！
             self.joint_targets['joint2'] = self.target_q['joint2']
             
         self._send_synchronized_command()
