@@ -197,7 +197,7 @@ void HydrusXiUnderActuatedNavigator::initialize(ros::NodeHandle nh, ros::NodeHan
   // 内部モーメント制御の初期化
   target_joint_index_ = -1;
   tau_des_target_ = 0.0;
-  has_moment_command = false;
+  has_moment_command_ = false;
   
   moment_command_sub_ = nh_.subscribe(
       "/hydrus_xi/target_internal_moment",
