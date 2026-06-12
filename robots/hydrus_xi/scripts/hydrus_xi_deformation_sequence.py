@@ -130,8 +130,8 @@ class HydrusXiDeformationSequencer:
         """
         angle_diff_to_final = self._get_angle_difference(self.current_q[joint_name], self.target_q[joint_name])
         
-        P_GAIN = 1.5  # 減速領域でも確実に応答させるため、ゲインを少し高めに設定
-        MAX_DRIVE_TORQUE_BASE = 0.08  # 通常巡航時の風の最大出力
+        P_GAIN = 1.0  # 減速領域でも確実に応答させるため、ゲインを少し高めに設定
+        MAX_DRIVE_TORQUE_BASE = 0.06  # 通常巡航時の風の最大出力
         
         # 1. 基礎となる目標モーメント命令値
         tau_des = P_GAIN * angle_diff_to_final
