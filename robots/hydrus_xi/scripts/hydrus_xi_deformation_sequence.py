@@ -127,8 +127,8 @@ class HydrusXiDeformationSequencer:
         """【非線形形状変化対応型・動的ゲインブーストモデル】"""
         angle_diff_to_final = self._get_angle_difference(self.current_q[joint_name], self.target_q[joint_name])
         
-        P_GAIN_BASE = 1.8
-        MIN_DRIVE_TORQUE_BASE = 0.40
+        P_GAIN_BASE = 0.5
+        MIN_DRIVE_TORQUE_BASE = 0.20
         
         init_diff = abs(self._get_angle_difference(self.joint_targets[joint_name], self.target_q[joint_name]))
         progress = 1.0
