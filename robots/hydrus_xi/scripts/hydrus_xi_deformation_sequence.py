@@ -29,7 +29,7 @@ class SequenceStep(Enum):
 
 # パラメータ
 ANGLE_ERROR_THRESHOLD = 0.05     # 角度誤差閾値 [rad]
-JOINT_RAMP_RATE_BASE = 0.001     # 基本スロープ速度 [rad/loop]
+JOINT_RAMP_RATE_BASE = 0.00025     # 基本スロープ速度 [rad/loop]
 
 # 静定判定用のパラメータ
 STABILIZE_VELOCITY_THRESH = 0.01  # 静定したとみなす角速度の閾値 [rad/s]
