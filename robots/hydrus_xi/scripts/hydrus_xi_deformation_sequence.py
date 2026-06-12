@@ -2,10 +2,10 @@
 # -*- coding: utf-8 -*-
 
 """
-Hydrus-Xi 連続変形シーケンス実行スクリプト（変形後静定ウェイト＆全ステップ相互連動バグ対策版）
+Hydrus-Xi 連続変形シーケンス実行スクリプト（ゴール直前ソフトランディング減速＆静定ウェイト版）
 
 使用例:
-  python hydrus_xi_deformation_sequence.py 0.8 -1.0 0.9
+  python hydrus_xi_deformation_sequence.py 0.0 -1.0 0.0
 """
 
 import rospy
@@ -124,18 +124,35 @@ class HydrusXiDeformationSequencer:
         self.moment_pub.publish(msg)
 
     def _calculate_target_moment(self, joint_name):
-        """【全域一定速度マネジメントモデル】"""
+        """
+        🛠️ 【全域一定速度＋特異点・ゴール直前ソフトランディング減速モデル】
+        目標地点に近づくにつれてプロペラの風を自律的に弱め、衝突現象と逆戻りをねじ伏せる。
+        """
         angle_diff_to_final = self._get_angle_difference(self.current_q[joint_name], self.target_q[joint_name])
         
-        P_GAIN = 0.15
-        MAX_DRIVE_TORQUE = 0.07  # 風の最大出力をホールド
+        P_GAIN = 1.5  # 減速領域でも確実に応答させるため、ゲインを少し高めに設定
+        MAX_DRIVE_TORQUE_BASE = 0.08  # 通常巡航時の風の最大出力
         
+        # 1. 基礎となる目標モーメント命令値
         tau_des = P_GAIN * angle_diff_to_final
         
-        if tau_des > MAX_DRIVE_TORQUE:
-            tau_des = MAX_DRIVE_TORQUE
-        elif tau_des < -MAX_DRIVE_TORQUE:
-            tau_des = -MAX_DRIVE_TORQUE
+        # 2. 💡 ゴール手前での減速制御（フェードアウト処理）
+        remaining_angle = abs(angle_diff_to_final)
+        DECEL_ZONE = 0.15  # 減速を開始するゴール手前の残差エリア [rad] (約8.5度)
+        
+        if remaining_angle < DECEL_ZONE:
+            # ゴールに近づくほど 1.0 ➔ 0.0 へと滑らかに絞り込まれる減速係数
+            fade_factor = remaining_angle / DECEL_ZONE
+            dynamic_max_torque = MAX_DRIVE_TORQUE_BASE * fade_factor
+            rospy.logdebug(f"[{joint_name}] ゴール接近・減速中: 出力上限を {fade_factor*100:.1f}% に抑制")
+        else:
+            dynamic_max_torque = MAX_DRIVE_TORQUE_BASE
+            
+        # 3. 動的に計算された上限値でクリッピング（飽和処理）
+        if tau_des > dynamic_max_torque:
+            tau_des = dynamic_max_torque
+        elif tau_des < -dynamic_max_torque:
+            tau_des = -dynamic_max_torque
             
         return tau_des
 
@@ -187,21 +204,18 @@ class HydrusXiDeformationSequencer:
 
     def _step_joint1_stabilize(self):
         """Joint 1 変形後の揺れを収束させる待機ルーチン"""
-        # 変形完了後の位置をキープさせる（通常の位置制御PIDを再有効化して固定）
         self.joint_targets['joint1'] = self.current_q['joint1']
         self.joint_targets['joint3'] = self.current_q['joint3']
         self._send_synchronized_command()
         
-        # 関節の角速度をチェックして揺れ具合を判定
         current_vel = abs(self.current_dq['joint1'])
         duration = (rospy.Time.now() - self.step_start_time).to_sec()
         
         if current_vel < STABILIZE_VELOCITY_THRESH:
             self.stabilize_loop_count += 1
         else:
-            self.stabilize_loop_count = 0  # 揺れが再発したらカウンタリセット
+            self.stabilize_loop_count = 0
             
-        # 条件判定：一定時間揺れが収まるか、タイムアウト時間を超過した場合
         if self.stabilize_loop_count >= STABILIZE_REQUIRED_LOOPS:
             rospy.loginfo("[HydrusXiSequencer] 🌊 Joint 1 の揺れが収束しました (待機時間: %.2f秒) -> Step 4", duration)
             self.current_step = SequenceStep.JOINT3_PRETENSION
@@ -213,7 +227,6 @@ class HydrusXiDeformationSequencer:
 
     def _step_joint3_pretension(self):
         """Step 4: Joint 3 の予張力生成"""
-        # 💡 修正：Joint 3の準備中、変形完了したJoint 1は最終ターゲット角度（target_q）にガチガチに固定する
         self.joint_targets['joint1'] = self.target_q['joint1']
         self.joint_targets['joint3'] = self.current_q['joint3']
         
@@ -228,7 +241,6 @@ class HydrusXiDeformationSequencer:
 
     def _step_joint3_deform(self):
         """Step 5: Joint 3 の純空力変形"""
-        # 💡 修正：Joint 3が風を浴びて動いている間も、キックバック反力に負けないようJoint 1をターゲット位置に完全ホールド
         self.joint_targets['joint1'] = self.target_q['joint1']
 
         angle_diff = self._get_angle_difference(self.joint_targets['joint3'], self.target_q['joint3'])
@@ -273,7 +285,6 @@ class HydrusXiDeformationSequencer:
 
     def _step_joint2_servo(self):
         """Step 7: Joint 2 のサーボ変形"""
-        # 反作用に負けないよう、確定した最終ターゲット angles でバネの基準点をガチガチに固定する
         self.joint_targets['joint1'] = self.target_q['joint1']
         self.joint_targets['joint3'] = self.target_q['joint3']
 
