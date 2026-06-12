@@ -172,7 +172,7 @@ HydrusXiUnderActuatedNavigator::HydrusXiUnderActuatedNavigator():
     target_joint_index_(-1),
     tau_des_target_(0.0),
     has_moment_command_(false),
-    target_moment_weight_(0.125)  // 💡 修正：初期の重みの割合を 0.5 から 0.125 へ4分の1に軽減
+    target_moment_weight_(0.02)  // 💡 修正：初期の重みの割合を 0.5 から 0.02 に軽減
 {
 }
 
