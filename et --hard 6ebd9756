@@ -1,0 +1,786 @@
+[33m14fbdec6[m[33m ([m[1;36mHEAD -> [m[1;32mshiomi/hydrus_xi/1jamming/practice2[m[33m, [m[1;31mshiomi/shiomi/hydrus_xi/1jamming/practice2[m[33m)[m DECEL_ZONE = 0.15
+[33maa375327[m launchファイルに最後の二行を追加
+[33m1dede606[m error fix
+[33m49e9e757[m  MAX_DRIVE_TORQUE_BASE = 0.01
+[33mefcbd942[m MAX_DRIVE_TORQUE_BASE = 0.02  # 通常巡航時の風の最大出力
+[33m6ebd9756[m target_moment_weight_(0.02)  // 💡 修正：初期の重みの割合を 0.5 から 0.02 に軽減
+[33m9e09d9ef[m joint2の角速度を向上
+[33m4dc3c800[m fix error
+[33m4acdf83c[m 最適化制御のモーメントの割合を減らした
+[33mb840a403[m   MAX_DRIVE_TORQUE_BASE = 0.06  # 通常巡航時の風の最大出力
+[33mfce1d4e8[m ANGLE_ERROR_THRESHOLD = 0.05     # 角度誤差閾値 [rad] JOINT_RAMP_RATE_BASE = 0.001     # 基本スロープ速度 [rad/loop]
+[33m48b0c696[m JOINT_RAMP_RATE_BASE = 0.00025     # 基本スロープ速度 [rad/loop]
+[33m92bc1f46[m 関節減速機能の追加
+[33m4ef3d089[m P_GAIN = 0.15 MAX_DRIVE_TORQUE = 0.07
+[33mf05cf322[m  P_GAIN = 0.2  MAX_DRIVE_TORQUE = 0.08  # 風の最大出力をホールド
+[33m402fff35[m P_GAIN = 0.25 MAX_DRIVE_TORQUE = 0.1  # 風の最大出力をホールド に加えて揺れが終わってから動くようにした
+[33mdc2b81e4[m         P_GAIN_BASE = 0.5         MIN_DRIVE_TORQUE_BASE = 0.20
+[33m0dbf14be[m gaveboではまたうまく行かなかったので、トルク制御にするためにサーボのPIDに送る値を変更した
+[33ma0ba7e5d[m[33m ([m[1;31morigin/shiomi/hydrus_xi/1jamming/practice2[m[33m)[m gaveboに送る情報によってトルク制御を実現しようとしている。実機では使えないので、注意してください
+[33m61465715[m[33m ([m[1;31mshiomi/shiomi/hydrus_xi/1jamming/practice1[m[33m, [m[1;31morigin/shiomi/hydrus_xi/1jamming/practice1[m[33m, [m[1;32mshiomi/hydrus_xi/1jamming/practice1[m[33m)[m 戻した
+[33m704b32c4[m  simulation:       pid: {p: 50.0, i: 0.4, d: 2.0, i_clamp_max: 6.6, i_clamp_min: -6.6}       init_value: 1.57       をp: 5.0,にした
+[33mba5554a0[m 摩擦力再現のため、修正
+[33mb48bbafd[m フリーズ抑制、うまく行かないかも
+[33m9600bb30[m         P_GAIN = 0.25         MIN_DRIVE_TORQUE = 0.12
+[33me0fc438c[m エラー修正
+[33m4375ca2c[m ゆっくりな動きにした
+[33mff7ad30d[m error fixed
+[33m52666258[m 前述の変更に合わせてこちらも変更
+[33m3844b546[m 摩擦力をサーボで再現するためにc++のコードを書き換えた。
+[33m9e047a07[m error fixed
+[33m0edb703f[m エラー修正
+[33m104496c1[m 関節部の0.05 Nmの摩擦力をサーボのトルクによって再現
+[33m840e3619[m         P_GAIN = 1.0         MIN_DRIVE_TORQUE = 0.25
+[33m7b2dd5c3[m 戻した
+[33m0d7a54b9[m gimbalによる推力強制
+[33md633fd29[m  P_GAIN =  1.0 MIN_DRIVE_TORQUE = 0.5
+[33m787c8582[m JOINT_RAMP_RATE = 0.003
+[33m61c0b0ed[m math.copysign(0.01, dq) に変更することで、まさつ低減
+[33me00bae42[m P_GAIN = 0.5 MIN_DRIVE_TORQUE = 0.1
+[33m193ac84c[m 摩擦再現トルクを直接送信する方法に切り替えた。
+[33m933ed102[m P_GAIN = 0.3
+[33me0c6a4f5[m    P_GAIN = 0.2
+[33me6ffea7a[m JOINT_RAMP_RATE = 0.001
+[33m09e3ddda[m JOINT_RAMP_RATE = 0.0015 に変更することで、サーボのトルク０を目指す。
+[33m2b407e4a[m P_GAIN = 0.15 MIN_DRIVE_TORQUE = 0.025 CONST_FRICTION_TORQUE = 0.0 に変更した
+[33m6da19679[m サーボによって回転方向と逆向きに摩擦力が働くのを再現した。
+[33mc79db6d9[m error fixed
+[33m5e446d5b[m 不要な行を削除
+[33me812f3f2[m Ramp一元化
+[33m98963002[m 位置司令のramp制御に戻した
+[33m905e8e28[m 通信ミスを修正
+[33m7796407a[m トピックの完全な一本化
+[33m33ee463f[m copy collectly
+[33mbbc9880c[m トピックのすれ違いを修正
+[33mdebd5a43[m /hydrus_xi/joints_ctrl トピック1本だけで送る形に修正
+[33m1b093fc1[m FRICTION_COEFF = 0.01             # 摩擦係数 [N*m*s/rad]に変更
+[33m43ee204c[m 目標モーメントの伝え方を変更した
+[33m2f4d5ddf[m 連続して変形角度の指示ができる仕様に変更した
+[33m35c64af2[m モーメント計算を単純化し、安全なAPIだけで計算できるようにした
+[33m216ded52[m gimbal_ctrl_pub_に修正
+[33m9b9ea29b[m JSKが100%サポートしている KDL::Vector 型で重心やローターの位置を受け取り、それをこのプログラムの内部で Eigen::Vector3d に変換する
+[33me3400d59[m robot_model_for_plan_ = boost::make_shared<HydrusTiltedRobotModel>(); に修正
+[33m09929e1c[m テンプレート関数の型の不整合、および行列型から配列型への修正を行った
+[33m6814a26b[m computeInternalMomentZ 関数を外の最適化関数（匿名名前空間内の関数）から呼び出せるように、private: から public: セクションへと完全に引っ越しさせた
+[33mb772f261[m ROSのもう一つの管理ファイルである package.xml に「このパッケージは std_msgs に依存しています」というメモを追加
+[33meeaaf5fa[m CMakeLists.txtを変更に合わせて修正した。std_msgs も使うよ！という意味です
+[33m11220576[m scripts/hydrus_xi_deformation_sequence.py を新規作成・修正することで、推力制御用の変形アルゴリズムを初めて実装した。
+[33m10b4db49[m src/hydrus_xi_under_actuated_navigation.cppに内部モーメント発生用のプログラムを追加することで、推力制御の初めの一歩となる
+[33m4bb14dcd[m include/hydrus_xi/hydrus_xi_under_actuated_navigation.hに新しいクラスを追加したプログラムを作成
+[33m63eaa4d5[m deformation_sequence.pyという空ファイルをscriptsに作成した
+[33m371d8db1[m 直近の変更と同じ
+[33m4ae23fc0b[m make a new branch. Because conflict cause again, I try to revise it.
+[33me9c75e5a[m 新ブランチ作成時のコンフリクト解消
+[33mad264c99[m[33m ([m[1;32mmaster[m[33m)[m temp
+[33m88300956[m[33m ([m[1;31mupstream/master[m[33m, [m[1;31mshiomi/master[m[33m, [m[1;31morigin/master[m[33m, [m[1;31morigin/HEAD[m[33m, [m[1;31moku/main[m[33m)[m [GA] support Ubuntu24.04 (https://github.com/jsk-ros-pkg/jsk_aerial_robot/pull/750)
+[33m85c8fdda[m [Dragon] new model of v1.5 with 5inch ducted propellers (#745)
+[33ma476b5fd[m [ros-o] support one for ROS_DISTRO (#727)
+[33m4908c3da[m [Spinal][GA] Add CI process for Spinal H7_v2 (#689)
+[33mc65ff139[m [gimbalrotor] suport all type of gimbalrotor (#703)
+[33m5eed99a3[m [Navigation][Nav State] create a new function to check whether the robot is under inflight state (#751)
+[33m5045e0bd[m [DRAGON][Model][Control] merge the work of IJRR 2023 (#743)
+[33me0eb493f[m [estimation][imu] pubish frame id in imu ros converted topic (#710)
+[33mdedcafe8[m [Mini Quadrotor] fix the wrong location of FC (#730)
+[33mc05cbb29[m [Neuron][PWM][G4] introduce synchronized set_pwm function  (#740)
+[33m96287fda[m [Spinal][Direct Servo] refactor the initialization process (#742)
+[33m5a87bab8[m [Spinal] refactor the initialization process and the pwm command transition from controller. (#741)
+[33m3f0c308b[m [Robot Model][Feasible Control Convex] fix the wrong order to check the singularity of triple cross production (#744)
+[33m6ac557b5[m [Mini Quadrotor] update the URDF with the CFRP 3D LiDAR protector (#729)
+[33ma045a3da[m [CAN][Spinal][Neuron] correct the tick to count 1 second (#725)
+[33mdff781cb[m [Spinal][IMU][MAG][ICM20948] refactor the polling process. 1) avoid to use HAL_Delay() in FreeRTOS system; 2) use continuous bytes reading method to get both raw ADC data and the status (6bytes -> 8bytes). (#724)
+[33m746a7421[m [Neuron][STM32G4][WIP] develop new neuron board with core of STM32G4 (#540)
+[33m35c3f7cc[m [Spinal][Servo][Dynamixel] automatically detect the connection mode between standard UART and half-duplex (#717)
+[33m8e698727[m [Spinal][Servo][Dynamixel] dynamically change UART pin to pull up mode only in half-duplex mode (#716)
+[33madf82ed4[m [Spinal][Servo][Dynamixel] only switch to RX mode when it is necessary to read packets from servos (#715)
+[33mf640b395[m [Spinal][Servo][Dynamixel] fix the bug about the sync write process for setting the goal position (#714)
+[33m7c37c9c5[m [Spinal][Neuron][Dynamixel] refactor the reboot process at the initila phase (#713)
+[33m4063c95e[m [Estimation] add dependency of aerial_robot_estimation for sensor_plugin (#711)
+[33m605a94c3[m [Spinal][Servo][WIP] Integrated interface to communicate with multiple types of servo (e.g. Dynamixel, Kondo). (#687)
+[33m992d4cf7[m [spinal] update the cube_ide.sh to launch stm32H7_v2 for spinal v4.1 (#682)
+[33m8656ec18[m [Hydurs_XI] update the motor/propeller configuration (#701)
+[33mde21e3ed[m [estimation] identify the name space std for std::array (#705)
+[33m34cdd46b[m [Navigation][Trajectory] use the current pose and velocity for the start point  (#709)
+[33mf60dd7f3[m [Navigation][Trajectory] enable to support multiple waypoints for generating new trajectory  (#708)
+[33m98206f1b[m [Navigation][Trajectory] enable to set the duration when generating a trajectory (#707)
+[33m0e7b243d[m [GA] add option --include-eol-distros for rosdep update (#706)
+[33m5726b514[m Added return logic to altitude sensor. (#681)
+[33m017fedc1[m Added explicit stop() call for callback_spinner_ as done for main_loop_spinner_ (#680)
+[33mc45446b0[m [aerial_robot_model] fix frame name with robot namespace in interactive marker tf broadcaster (#678)
+[33mcee9b4a6[m [CI][Architecuture] suport test on arm64 architecture (#667)
+[33mf6a0d20e[m [DRAGON][Demo] enable to run demo from the local base station using desktop shortcut (#670)
+[33m9184f491[m [Navigation] refactor the joy command receiver to support more types of joy controller (#669)
+[33m8db7e775[m [Modle][Control][Navigation] refactor the whole system from XYZ-Euler angles to true SO(3) (#671)
+[33mcf53cac9[m [Rostest][Timeout] increase the delay for sending task start trigger since the long gazebo initialization (#677)
+[33m3189604a[m [Rostest] remove the wrong duplicated file for hovering check (#675)
+[33m66419d08[m [Navigation][Trajectory] avoid the wrong access to empty trajectory generator just after reset (#673)
+[33mac86ead4[m [Jacobian][Feasible Control] refactor the process to handle a singular case that two vectors are almost paralell. (#668)
+[33m7be81c82[m[33m ([m[1;31mkaneko/master[m[33m)[m [Servo][Spinal][Neuron] refactor the rule to handle pulley skip with external encoder (#666)
+[33m4e9fbb2e[m [Servo][Spinal][Neuron] send goal postion from neuron to spinal to solve the sync problem between them when using external encoder (#665)
+[33m386e1946[m [Neuron][Servo][Encoder] automatically detect the servo pulley skip error  (#545)
+[33m69327d45[m [navigation] disable takeoff if initial xy pos error is larger than threshold (#660)
+[33m49418eb2[m [Spinal][Neuron][Servo] enable current control for dynamixel motor  (#527)
+[33m2638f5f6[m [Neuron][STM32F4] ignore Debug.launch (#662)
+[33mea75d84f[m [GA][Firmwared] udpate the debian list which was freezed in the docker file (#664)
+[33m61c38f29[m [aerial_robot_model] add new API to get and set extra module map (#661)
+[33m5a1c14e4[m [Firmware][STM32CubeIDE] remove unnecessary main.c in STM32CubeIDE project, which causes build warning (#657)
+[33md421b9bd[m [Spinal][Config] Additional features and new configuration for Spinal (#630)
+[33md0724592[m[33m ([m[1;33mtag: 1.3.6[m[33m)[m 1.3.6
+[33m381ee514[m update CHANGELOG.rst for all packages
+[33m7d4b3476[m Handle robots with state machine (#656)
+[33m7e3a343a[m Interpretive Robot Interface (#655)
+[33mfc1a1dfc[m [Navigation] refactor the process for landing phase. Only accept new pose in hover state and also reset the target velocity in landing phase (#653)
+[33m5c0eb27c[m [Dragon][Naviagation] refactor the landing process by introducing a new state: pre_land_state (#652)
+[33m469996ca[m [Dragon] remove unnecessary scripts (#651)
+[33mffc9c8e2[m [Estimation] stop sending TF with same timestamp (#650)
+[33mb8b789de[m[33m ([m[1;31mzicheng/master[m[33m)[m [GA][Firmware Build][Neuron] add script to build and upload the firmware of neuron (#649)
+[33m3e9f05db[m [Spinal][Gthub Action] New workflow process for Spinal firmware CI to avoid unexpected failure in build check. (#646)
+[33me6be0c13[m [GA][Firmare Build] modify the build option, single package and single make job (#648)
+[33m25e0f642[m [GA][Catkin Lint] refactor the script to run catkin lint (#647)
+[33mc89afb82[m[33m ([m[1;33mtag: 1.3.5[m[33m)[m 1.3.5
+[33m63453ddb[m update CHANGELOG.rst for all packages
+[33m13dbbe77[m [SYSID] [Motor Test] add a py script to analyze motor_test data (#591)
+[33m34554da3[m [Spinal][Github Action] Automatic Spinal  firmware build flow by Github Action. (#631)
+[33m77c1a89e[m [ROS-One] change the repository from forked one (kazuki) to the orignal one (v4hn) (#644)
+[33m069f520a[m ros_one_catkin_tools (#642)
+[33m88b7930f[m [Mocap][Multicast][IGMP] create a script to force send IGMP report to router periodically (#641)
+[33mab2ae0db[m [Spinal][Neuron] refactor the initialization/reinitialization process (#640)
+[33m6e3219bd[m Revert "[Neuron][Dynamixel] add original rule to force switching off servo according to overload error" (#639)
+[33m469059f6[m [Spinal][Neuron][Servo] refactor the torque off rule  (#636)
+[33md9923e22[m [Neuron][Servo][Inialize] introduce a new variable to check the connnection between spinal and neuron (#635)
+[33m7653ff93[m [Navigation][Trajectory] solve the discontinued problem of yaw rotation (#634)
+[33m8b27d4f9[m [control][navigation] Skip following target_pose trajectory during landing (#633)
+[33m71d746f0[m ubuntu22.04 support (#626)
+[33m83557fbe[m Merge pull request #632 from sugikazu75/PR/rosinstall
+[33m79e8be9a[m [GA] skip catkin linter for mocap_optitrack
+[33me318b595[m [mocap_optitrack] use commit hash
+[33maed62192[m [rosinstall] add mocap_optitrack to rosinstall
+[33m451c7eb4[m [rosinstall] update external repositry version
+[33m244abd3c[m[33m ([m[1;33mtag: 1.3.4[m[33m)[m 1.3.4
+[33mf7af7e44[m Update CHANGELOG.rst
+[33me87976d3[m Merge pull request #625 from heissereal/fix_pwm_bag
+[33mb87c2b50[m declear the float type
+[33m6d3f42b7[m add fail safe of invaild pwm value
+[33m9baf9803[m fix bag that sent zero pwm value to motors on reset
+[33mbc8da3fe[m Merge pull request #621 from Li-Jinjie/PR/fix-bug-mocap
+[33m8ddf96bc[m [base][mocap]: add an option "enable_optitrack: true". Without this option, the connection to mocap can be established only once.
+[33m0bbcdf77[m Merge pull request #619 from tongtybj/PR/ga/kinetic
+[33m138be552[m [GA] stop the support of kinetic ros-distribution
+[33m4b568541[m Merge pull request #599 from sugihara-16/PR/feature/spinal/imu/icm20948
+[33m0d95e299[m [Spinal] modified a file link for stm32cubeide
+[33m1b59aa17[m [Spinal][Imu] workaround to support spinalF7
+[33mb06b03f1[m [Spinal][Imu] add accel correction based on temperaure sensor
+[33m09d06283[m [Spinal][IMU] modified pin assign for imu
+[33md0be3622[m Merge pull request #613 from sugihara-16/PR/spinal/pwm_test
+[33mc483e597[m [MotorTest] modified pwm test topic to support new pwm control method
+[33md3607205[m Merge pull request #614 from sugikazu75/PR/CI/refactoring
+[33ma0cae7b3[m [GA] fix rostest option
+[33m155ac333[m [GA] remove -p1 -j1 for catkin build
+[33m8beeb557[m [GA] refactored github actions
+[33mb6c1c424[m [Spinal][PwmTest] add build flags
+[33m1088c142[m [Spinal][PwmTest] workaround to send pwm value to each servo independently.
+[33m013fa535[m [Spinal][IMU] workaround to use internal DLPF of ICM20948.
+[33m7ac71849[m Merge pull request #610 from sugikazu75/PR/package/depend
+[33m212c7171[m fix bug: add depend tag to build each package
+[33me11261e2[m Merge pull request #589 from tongtybj/develop/mini_quadrotor/livox_mid360
+[33m4961c1b7[m [Mini Quadrotor] refactor the rosbag scripts
+[33mfee334cc[m [Mini Quadrotor][Livox&FastLio] add the launch files about livox mid360 and fast lio into sensors.launch.xml and also update the topic names
+[33mb6b9e8be[m [Mini Quadrotor][Battery] update battery configuration
+[33m6319203f[m [Mini Quadrotor] update the battery info
+[33m7efdd7d1[m [Mini Quadrotor] tuning the pos and att gain
+[33m20050569[m [Mini Quadrotor][LIO] update the parameter to perform LIO (fast-lio with Livox MID360) based localization
+[33mdf447dbf[m [Mini Quadrotor] create the quadrotor model with 3D LiDAR of Livox MID360
+[33md79ea797[m [Mini Quadrotor] create script to replay rosbag
+[33m9836f15f[m Merge pull request #605 from tongtybj/PR/rosbag/record
+[33m0a31a909[m Merge pull request #603 from tongtybj/PR/navigation/land
+[33m906870db[m Merge pull request #604 from tongtybj/PR/mocap/launch
+[33mf173dd01[m [aerial robot base] add joy topic for rosbag control record
+[33mde42926e[m [Mocap] remove the "required" flag to allow the onboard-sensor-only flight
+[33md0a9fcc5[m [Navigation][Land] add warning message for wrong value assignment
+[33mec28c141[m Merge pull request #602 from tongtybj/PR/feature/estimation/imu
+[33m4ad039dc[m [Estimation][IMU] fix the bug about wrong assigment for acceleration
+[33mce6754c5[m Merge pull request #601 from tongtybj/PR/feature/estimation/vo
+[33mb615e38a[m [Navigation][Land] disable to update the target xy and yaw for landing process
+[33m389e558d[m [Navigation][Land] gaurantee a minimum check duration for landing detection
+[33m1b15252c[m [Navigation][Land] avoid the ascending motion in land phase
+[33m2f3b1fd0[m [Estimation][IMU] refactor the index designation of KF based estimation result
+[33m055dd674[m Merge pull request #600 from tongtybj/PR/feature/livox_lidar
+[33m283a137d[m [Estimation][VIO] fix bug: initialize prev_timestamp
+[33m5688e4fe[m [Estimation][VIO] add static tf from the world frame to the vo origin frame
+[33m756199b2[m [Estimation][VIO] refactor the calculation of the transfrom from the world frame to the origin frame for VO/VIO
+[33m6db4245c[m [Estimation][VO][WIP] refactor the process for velocity related to the reference frame (local or global)
+[33mc3b8a5b8[m [Estimation][LIO] add a default configuration to use LIO for full state estimation
+[33m8a580bd2[m [GA] ignore to check catkin lint for livox_ros_driver2 and fast_lio
+[33m5ad8d1ac[m update .rosinstall to automatically install livox_ros_dirver and fast lio
+[33m327d54fe[m [Spinal][Imu] add references of imus
+[33mfd423fed[m [Spinal][Imu] change file structure of imu
+[33m7e9bb807[m [Spinal][ICM20948] decreaced mag read freqency to balance coretask update frequency (bucause mag read include some HAL_Delay)
+[33m23048377[m [Spinal][Icm20948] solve the problem that mag data is so unstable
+[33m17d00e01[m [Spinal][ICM20948] modified scale of acc raw data to follow the process in imu_basic
+[33mf7fdf21e[m [Spinal][ICM20948] debug around gyro poling
+[33m0b4f835f[m [Spinal][Icm20948] remove some time delay and chnage the reading rate of mag
+[33mc89129fe[m [Spinal][ICM20948] add some delay in chip check parts
+[33m7552bf72[m [Spinal][ICM20948] modify structure of adc read function to stabilize sensing.
+[33m46ffb8cd[m [SPinal][ICM20948] change imu update interval
+[33m371e3757[m [Spinal][ICM20948] modified the method of waking up icm
+[33m2f77c277[m [Spinal][ICM20948][WIP] device connection is completed, but it's still very unstable.
+[33ma7d46100[m [Spinal][ICM20948] create a new flag to determine imu type
+[33m8983b434[m [Spinal][ICM20948][WIP] workaround enabling mup reading
+[33m165170c3[m [Spinal][IMU][ICM20948][WIP] create a new interface of icm-20948 (this can be compiled, but stil not work)
+[33m3eac22f0[m [Spinal][IMU][MPU9250] modified sevral parts to make it easier to inherit
+[33m8375287d[m Merge pull request #586 from tongtybj/PR/spinal/STM32H7/IMU
+[33m2936b050[m Merge pull request #587 from tongtybj/PR/mocap/ground_truth/sub
+[33mbe22c8f5[m Merge pull request #588 from sugikazu75/PR/high_voltage_failsafe
+[33m413df64e[m [navigation] enable set high voltage cell threshhold by rosparam
+[33md42b5a34[m [navigation] if the inout voltage is high, disable to takeoff
+[33mcc9865a8[m [Mocap][Subscriber] explicitly use TcpNoDelay option for ground_truth subscriber
+[33mcd715351[m [Spinal][STM32H7] correct the initialization order of spinal-IMU
+[33mae6ea702[m Merge pull request #585 from tongtybj/PR/force_landing/fix_bug
+[33m1078824c[m [Control][Landing] revert the missing initialization for force_landing_descending_rate
+[33m87713784[m Merge pull request #583 from tongtybj/develop/navigation/landing
+[33m0b86c5d9[m [Navigation][Land] refactor the landing condition for faster convergence
+[33ma18a69fc[m Merge pull request #556 from tongtybj/develop/navigation/trajectory_generation
+[33m1c4892f0[m [Control] refactor the cmake rule for build binary file and library
+[33m8afc7515[m [Nav][trajectory][Dragon] update the parameter about the trajectory generation
+[33mddc25030[m [Nav][trajectory] enable to forward the target yaw accelation from the planned trajectory to the navigator, which guarantee the better performance for yaw motion
+[33m459f7092[m [Control] enable to forward the target angular acceleration from navigator to controller. Support all controllers to perform feed-forward acc term for rotational control
+[33m050cc4ca[m [Nav][trajectory] improve the yaw trajectory following: enable the latch of yaw motion.
+[33ma8cd2b97[m [Nav][trajectory] use MinimumJerk Trajectory Optimization instead of MinimumSnap one, which shows better following result for our system
+[33mc2fdf809[m [Nav][trajectory] use the last target pose/vel/acc instead of the current state to set for the start state in the new trajectory planning
+[33mf51180ce[m [Nav][trajectory] introduce trajectory_min_du as rosparamter
+[33md71ddbc2[m [Nav][trajectory][Dragon] update the rviz config
+[33m81cb3188[m [Nav][trajectory] enable to perform trajectory following for yaw motion
+[33m4881b7ba[m [Nav][trajectory] fix the bug in quad_state
+[33mfbb89782[m [Control][LQI][UnderActuated] enable to pass the feed-forward acc to z control
+[33m6dc104ac[m [Navigation][Trajectory] enable to support to pass intermediate points for MinimumSnapTrajectory generator.
+[33m701ded41[m Navigation][Trajectory] implement the trajectory genreation and following towards a single target point
+[33mc3c5e995[m [Navigation][Trajectory] visualize the trajectory generation result for test code
+[33m24ec83fb[m [Navigation][Trajectory] add more constructor
+[33m27a485c2[m [Navigation][Trajectory] copy the source codes from https://github.com/uzh-rpg/dodgedrone_simulation/tree/main/dodgelib/src/reference
+[33m2e916f35[m Merge pull request #582 from tongtybj/PR/hydrus_xi/CMake
+[33ma48f014f[m [Hydrus XI] correct the dependency to satisfy catkin_lint
+[33ma9670ff2[m Merge pull request #581 from tongtybj/PR/c++17
+[33m2ec2abee[m [CI] use C++17 in ros kinetic
+[33m0e1f0cea[m [rosinstall] update the version of aerial_robot_3rdparty
+[33m5939e86b[m [CMake] use C++17 compiler for all packages that contain C++ files
+[33m819c9714[m Merge pull request #580 from tongtybj/PR/estimation/GPS
+[33mb69e1d34[m [GPS] remove "register" specifier for GPS time calculation. This calculation should be light enough, thus register sotorage should be unnecessary
+[33m86b6c824[m Merge pull request #555 from tongtybj/develop/navigation/pos_vel_mode
+[33m6a6ec736[m Merge pull request #554 from tongtybj/develop/landing_process
+[33mc23f7006[m [Navigation][Landing] modify the default descending velocty in landing mode
+[33m3e5a2b01[m [Navigation][Keyboard] fix the print function error to run in python2
+[33m945b95f8[m [Navigation] improve keyboard teleopration that allows to move the robot with uniform linear motion
+[33m94154d37[m [Navigation] improve the teleoperation, especially the pos-vel mode which follows a uniform linear motion.
+[33md38014b0[m [Navigation] add trajectory mode to distinguish the common pos-vel mode from the trajectory reference mode
+[33m9b2891b6[m [Navigation][Landing] fix the bug of variable initialization
+[33mcd3c3013[m Merge pull request #568 from sugikazu75/PR/mujoco/3rdparty
+[33m29ae8423[m [mujoco] update 3rd party repositry version
+[33me339106f[m Merge pull request #557 from sugikazu75/develop/mujoco
+[33mede95d93[m [mujoco] update the version of 3rd party repositry
+[33m6d284850[m Merge pull request #566 from Li-Jinjie/only_add_pre-commit
+[33me50e3867[m Merge pull request #5 from tongtybj/chou/develop/mujoco_kinetic
+[33m88be082e[m Merge pull request #3 from tongtybj/develop/mujoco
+[33mbbd9b122[m [Mujoco][Mini Quadrotor] skip mujoco test in ubuntu 16.04 kinetic
+[33m90e67bae[m [Mujoco][Github Action] avoid to back to the original path because of the symbolic link
+[33m0996ba0c[m Merge remote-tracking branch 'origin/master' into develop/mujoco
+[33ma46a459f[m Merge pull request #565 from Li-Jinjie/only_add_docs
+[33m9e152226[m [Code Style] add .clang-format to automatically format C++ code. Follow ROS C++ style
+[33me000515b[m [Code Style] add pre-commit, including black for Python, clang-format for C++. Cancel YAML formatter because its bad behavior.
+[33md2b81412[m Render PlantUML files
+[33m8ce32eaf[m [Docs] convert three figures to UMLs and save
+[33mc8625d79[m Render PlantUML files
+[33m37fc0f23[m [Docs] add the initial version of doc directory to the system
+[33mc367c7c1[m[33m ([m[1;31mkaneko/sugito/master[m[33m)[m Merge pull request #563 from Li-Jinjie/modify_typo
+[33m7c945737[m[33m ([m[1;33mtag: 1.3.3[m[33m)[m 1.3.3
+[33m191ea36d[m update CHANGELOG.rst for all packages
+[33mb1dcc374[m Fix typo. Need more test.
+[33m1ac8689b[m [Workflow] add a workflow to generate svg from UML
+[33mc93702d8[m [mini_quadrotor][mujoco] add rostest for mujoco
+[33mcc115492[m [Mujoco][hydrus] fix servo bridge node in launcher for mujoco
+[33m74232404[m Merge pull request #2 from tongtybj/develop/mujoco
+[33m3fd8fa89[m [Mujoco] update the tag of aerial_robot_3rdparty
+[33m4f76fa09[m [Mujoco][Robots] use the macro func in mujoco_ros_control to convert the URDF file to mujoco model
+[33m6880d0a3[m Add instruction in README.md for mini_quadrotor
+[33mb7cf02bf[m Fix typo. Need more test.
+[33mfb1cef08[m Add a description for File Structure of the whole system; extend gitignore to be compatible with CLion IDE.
+[33ma1680b03[m [Mujoco][Hydrus] add "mujoco" arg in the bringup launch file
+[33m75c0fe06[m [Mujoco][WIP] update the tag of aerial_robot_3rdparty to use the latest mujoco_ros_control
+[33mc9fdd0a1[m [Gazebo] rename the launch file for gazebo to distinguish from mujoco, and also update bringup launch files for all robots
+[33m8a328c4d[m [Mujoco][Robots] update the mujoco launch file, and related launch files for each robot
+[33m33cc82b9[m [Mujoco][Hydrus_XI] correct the inertia of PC
+[33m35fac731[m [Mujoco][Hydrus] add model conversion script for hydrus
+[33m52ce6c7d[m [Mujoco][Robots] update the model conversion scripts
+[33md108596b[m [Mujoco] move files that are not related to aerial robot to mojuco_ros_contro. Please refer to https://github.com/JSKAerialRobot/aerial_robot_3rdparty/pull/10.
+[33md1cbe791[m Merge remote-tracking branch 'origin/master' into develop/mujoco
+[33m53ac303f[m Merge pull request #561 from tongtybj/PR/feature/model/fix_bug
+[33mbf28d730[m Merge pull request #560 from tongtybj/PR/hydrus/cleanup_urdf
+[33m9828fd12[m [mujoco] comment out the portion of dae2stl script
+[33m6edbabec[m [mujoco] refactor servo angle initialization process
+[33meb218266[m [mujoco] refactor mujoco model generation script
+[33m15375eea[m [mujoco] refactor CMake for mujoco model generation
+[33ma758cee0[m Merge pull request #1 from tongtybj/develop/mujoco
+[33mcc6f33b9[m [Aerial Robot Model][Underactuated] use transformable model for planning
+[33m7daa2d81[m [Aerial Robot Model][Underactuated][Plugin] fix the wrong args assignment
+[33mc8fe84d8[m [mujoco] refactor the robot hardwared inteface, create a default hw class for general robots and the derived class for aerial robot.
+[33m3845cf15[m [mujoco] refactor the rotation process
+[33m909f305f[m [mujoco] rename the files for mujoco robot hardware interface
+[33meccc8845[m [mojoco] refactor MujocoRosControl to be more plane
+[33m2e00400b[m [mojoco] refactor the mujoco ros bridge
+[33mceadd7c4[m [mujoco] create directory for files related to mujoco
+[33m0cbd2a4c[m [mujoco] remove duplicated assignment
+[33m4a643678[m [mujoco] do not show blender script log to standard output
+[33mb2791d3d[m [Hydrus][URDF] remove unecessary URDF files
+[33m65ea3ecc[m [mujoco] remove unused files
+[33m7ae5d3f3[m [mujoco] enable to run mujoco model generation script by CMake
+[33m19dba861[m [mujoco] refactor model generation script
+[33m21c42c35[m [mujoco] delete stls
+[33mfda85520[m [mujoco] update model generation script not to generate stl in urdf directory if dae exist
+[33mfc60a4de[m [mujoco] support ros melodic
+[33m03d1a5ab[m [hydrus_xi] add mujoco option in launcher
+[33mdd00cb22[m [aerial_robot_simulation] depend on blender
+[33m376d27b9[m [mini_quadrotor] fix inertia of battery to become positive definite matrix
+[33mbb63c00e[m [mujoco] output robot mass
+[33maaad186d[m [RobotModel][WIP] output robot mass
+[33m7cef0cc2[m [gitignore][mujoco] ignore mujoco generated file, directory
+[33mcde01f34[m [mini_quadrotor][mujoco] add mujoco option in launcher
+[33maa9cb41a[m [dragon][mujoco] update mujoco model path in launcher
+[33m824a21d8[m [mujoco] add mjcf generation script
+[33m59c1e2ee[m [mujoco] add stl mesh of hydrus_xi and mini_quadrotor
+[33md53612a8[m [mujoco] fix dae conversion script to work recursively
+[33mddbb4aa8[m [mujoco] support headless mode
+[33mf28bf579[m [mujoco] separate mujoco robot model and world setting
+[33mf4fbd34e[m [dragon] modify dae convesion script for blender>2.8.0
+[33m53ac46bd[m [Simulation][Mujoco] refactor CMake config
+[33m7c2d5a0c[m [Simulation][Mujoco] remove mk from catkin_package
+[33m3fd7e616[m Merge branch 'jsk-ros-pkg:master' into develop/mujoco_
+[33m30474c8d[m Merge pull request #546 from tongtybj/develop/mini_quadrotor_
+[33m3ed55e8b[m [Mini Quadrotor] modify the configuration file place
+[33me72351f2[m [Estimate][IMU] add standard configuration for spianl IMU
+[33m2aabcaed[m Merge branch 'jsk-ros-pkg:master' into develop/mujoco
+[33m42d6bd61[m [Mini Quadrotor] update files to satisfy catkin-lint
+[33maad2b015[m [mujoco][aeiral_robot_simulation] debug for CI
+[33m69af603a[m [Mini Quadrotor] clean-up files
+[33m65de3627[m [Mini Quadrotor] add rostest scirpt to do CI
+[33mc37cf2c6[m [Mini Quadrotor] update the battery info
+[33m996864f9[m [Mini Quadrotor][Control] modifiy the paramter for landing
+[33m4cd4007e[m [Mini Quadrotor] update the battery info
+[33m42246ec2[m [Mini Quadrotor] modify the z control gain for under_actuated_tilted_lqi_controller
+[33m46fb4448[m [Mini Quadrotor] create ros package for mini quadrotor
+[33mff7067b5[m Merge pull request #558 from tongtybj/PR/feature/estimate/vo
+[33m87cb6c52[m Merge pull request #559 from tongtybj/PR/github/PR_template
+[33m552c09dd[m [Github] add template for pull-request.
+[33m593c472c[m Merge pull request #500 from tongtybj/PR/feature/visualize_rotor_speed
+[33m1167b243[m [Estimation][VO] refactor the throttle process
+[33mbaaa6031[m [Hydrus] update the missing CAD model (remove the fixed propeller)
+[33m62b0f1fc[m [Hydrus_XI] refactor CAD model realted to propeller to enable the visible rotation in gazebo
+[33me570e5e3[m [Hydrus] refactor CAD model realted to propeller to enable the visible rotation in gazebo
+[33ma9940898[m Refine the rate definition to enable zero rate
+[33m6e86ba3c[m Enable visualizing the rotor speed in gazebo
+[33m773b26e2[m [dragon] fix bug in transformation demo: exit when unsupported mode to avoid error in servo bridge
+[33mb98dd4b1[m [mujoco] print out key bind in mujoco viewer
+[33m6a06dfdf[m [mujoco] add noise to mocap data
+[33me6f44ff9[m [mujoco] refactor
+[33m0f256845[m [mujoco] modify joint damping
+[33m589b127d[m [mujoco] refactor
+[33m88ea6969[m [mujoco][ServoBridge] refactor servo bridge node not to use additional config file about servo order
+[33m9e2dfe7c[m [mujoco][dragon] modify joint param
+[33m6040dd18[m [mujoco] rename filenames
+[33ma5641b4d[m [mujoco] debug for CI
+[33m0ab1225d[m [aerial_robot_msgs] remove unused message ControlInput
+[33m0ff4a54e[m [mujoco] update CMekeLists to use downloaded mujoco header and library
+[33md998f419[m [mujoco] add makefile to download pre-build mujoco
+[33mbfd99e72[m [mujoco] remove unused files
+[33ma6a706f1[m [mujoco][dragon] update launcher to switch gazebo or mujoco
+[33m2e61e2f9[m [mujoco] enable to joint control
+[33m8276eabb[m [mujoco][servo_bridge] add use mujoco flag
+[33m5a3244d7[m [mujoco] publish mocap, imu, joint state
+[33mc06eab2f[m [mujoco] enable to publish simulation time
+[33m78f04cae[m [mujoco] enable to load flight controller
+[33m6e8ee850[m [mujoco] fix
+[33m77f8d44f[m [mujoco] add robot hardware interface
+[33m021ef4e1[m [Estimation][Sonar] add the return for bool function
+[33m30baaa87[m Merge branch 'jsk-ros-pkg:master' into develop/mujoco
+[33mcde359bc[m [mujoco] publish mocap and read imu
+[33mb954f45a[m [mujoco] update.
+[33md26e73a7[m [mujoco] add dummy timer
+[33mab16465f[m [mujoco] add timer in mujoco_robot_hw_sim
+[33mb6705091[m [Navigation][Landing] refactor the rule of updating the target altitude, which gives a better result of constant velocity movement
+[33m2981e155[m [mujoco] compile mujoco_robot_hw_sim and add sample model from mujoco
+[33m6d2d7956[m [Dragon][Navigation] refactor the landing process
+[33m196e8efd[m [Navigation] refactor the landing process with constant descending speed
+[33m324fb684[m [Naviation] pass the ctrl loop rate to navigator
+[33m0cbca2ce[m [Estimation][Landing] remove landing process
+[33m7fca257c[m [Estimation][Landing][Sonar] remove the naive processing associated with landing process
+[33meb17ee31[m [Estimation][Landing][IMU] remove the shock detection in landing pahse
+[33m0d3994c5[m [mujoco] compile spinal interface and attitude controller for mujoco
+[33m7c36782f[m [mujoco] update spinal interface and attitude controller for mujoco
+[33m7f3a1ffe[m [mujoco] add interfaces of spinal and attitude controller for mujoco
+[33m8fc9784e[m [mujoco] depend on libglfw3-dev for build
+[33medc06a52[m Merge pull request #553 from HarukiKozukapenguin/PR/acc_nav/landing_halt_cmd
+[33m2cebc7af[m [DEBUG][aerial_robot_control] set XyControlMode=POS_CONTROL_MODE in the call of setTargetXyFromCurrentState()
+[33m291919b9[m [DEBUG][aerial_robot_control] delete setTargetXyFromCurrentState for this setting is enough if it is called in setTargetXyFromCurrentState()
+[33m661e1287[m [DEBUG] set XyControlMode=POS_CONTROL_MODE in joystick control, and normal_land case
+[33m6b211a20[m [DEBUG][aerial_robot_control] set XyControlMode=POS_CONTROL_MODE in landing and halt
+[33m1c1bc32f[m [DEBUG][aerial_robot_control] set setTargetAcc=0 in setTargetXyFromCurrentState
+[33m6fc345d5[m [mujoco] add MujocoRobotHWSim
+[33m895a18c9[m [mujoco][WIP] update
+[33ma483ab00[m [mujoco] update dragom mujoco launcher
+[33mab946685[m [mujoco] refactor
+[33m6438b87e[m [mujoco] remove unused functions
+[33mdace1192[m [mujoco] update parameter input
+[33mbfee04f7[m update mujoco version to 2.3.7
+[33m75d7200f[m [mujoco] moved meshes
+[33m6f142e8e[m [mujoco] moved meshs
+[33m523340ba[m [mujoco] update mujoco version to 2.3.6
+[33mcf303bfe[m [mujoco] added joint initialize process
+[33m8d1d4fcf[m [mujoco] update launchers for mujoco
+[33mfd306bb9[m [WIP][mujoco] implement mujoco interface C++ version
+[33mf9a2c4a3[m [mujoco] modify publish rate
+[33m5b729b5e[m [mujoco] remove unused file in launcher
+[33m97673479[m [mujoco] update mujoco interface not to use numpy-quaternion
+[33m544b7734[m [mujoco] remove nuused files
+[33m00807659[m [mujoco] add mujoco source to path
+[33m5d8a1131[m [mujoco] remove unused files
+[33ma13bc802[m [mujoco] add initalize process of joint servos
+[33m54177cc6[m [mujoco] updat mujoco interface
+[33m85a3896a[m [mujoco] update damping of dragon mujoco model joint
+[33ma37e9c05[m [mujoco][servo_bridge] extend servo_bridge for mujoco simulation
+[33me19ff4ff[m [mujoco] update dragon mujoco model
+[33m76d5a4b2[m [mujoco] update mujoco ros interface
+[33m6b2549b5[m [mujoco] add flight controller interface
+[33m0d288ec1[m [mujoco] add ros topics: Clock, Imu, FourAxisCommnad, TorqueAllocationMatrixInv
+[33m982c544c[m [mujoco] update control param
+[33m9460d469[m [mujoco] update mujoco interface and flight controller
+[33m548028ff[m [mujoco] update dragon mujoco model
+[33m10abdbaf[m [mujoco] update pid controller
+[33m21160d02[m [mujoco] add config
+[33mc3711524[m [mujoco] update launchers
+[33mbe7ba7bd[m [mujoco] add mujoco interface scripts
+[33mc8644830[m [mujoco] update dragon mujoco model
+[33mff9c4e33[m [WIP][mujoco] update mujoco model spawner and add mujoco interface
+[33mb6877060[m [aerial_robot_msgs] add new type of message ControlInput for mujoco
+[33mf556e296[m [WIP] add birotor mujoco model
+[33mad8f562b[m [mujoco] modify dragon mujoco model
+[33m35d46951[m [mujoco] add launcher and script to spawn model
+[33m6584d5d0[m [mujoco] add floor to dragon mujoco model
+[33mb0379bfc[m [mesh] add blender script for conversion from dae to stl
+[33mec18bc92[m [mujoco] add dragon mujoco model
+[33m5f1a6e00[m Merge pull request #526 from tongtybj/develop/robot_control
+[33m77fa08dd[m Merge remote-tracking branch 'origin/master' into develop/robot_control
+[33mfa7596c6[m Merge pull request #525 from tongtybj/develop/robot_model
+[33m2beb1316[m [Control] correct the flag to use to check whether the model is reconfigurable
+[33m481d6219[m Merge remote-tracking branch 'origin/master' into develop/robot_control
+[33mdcbba159[m [Control] fix the bug about the timing of initial LQI gain publish
+[33md6a052d5[m [Control][LQI] fix the update process in cfg callback
+[33m4c9ca242[m [Control] move LQI-based controller to fundamental package (aerial_robot_control)
+[33m5d2f2e74[m [Robot Control] refactor the control framework for better understanding
+[33ma91456b0[m [Robot Control] remove unnecessary files
+[33m8096f1fc[m [Robot Model] add a new flag to determine the model whether fixed or not
+[33me174a937[m [Robot Model] add underactuated tilted robot model for quadrotor with tilted rotors
+[33me1a4533f[m Merge pull request #541 from tongtybj/PR/feature/rosinstall
+[33m856bfed7[m [rosinstall] add comment for the forked repositories
+[33m1173cd8a[m[33m ([m[1;33mtag: 1.3.2[m[33m)[m 1.3.2
+[33m80770eb2[m Update CHANGELOG for all packages
+[33m73f801f9[m Merge pull request #528 from tongtybj/PR/robots/demo
+[33m309270b5[m Merge pull request #539 from sugihara-16/PR/TiltedHydrus
+[33m5c10a71a[m [Dragon] implement stabilitycheck function for dragon full vectoring model
+[33m1958eb79[m [Dragon] merge joy stick launch into ground station launch file
+[33m6b16e119[m [Dragon] make full_vecotor_mode as default
+[33meed422de[m [Navigation] add message to inform user that ready for takeoff
+[33m02f101d5[m [Hydrus][Controller]Fix bug about thrust allocation in tilted robot
+[33m5df51381[m Merge pull request #538 from tongtybj/PR/spinal/neuron/motor_pwm
+[33m36bf548e[m [Spinal][CAN] fix bug: no pwm output if there is no neuron
+[33mb9bdfa88[m Merge pull request #535 from tongtybj/PR/feature/rqt/servo
+[33m483a6d64[m Merge pull request #536 from tongtybj/PR/feature/hydrus_xi/CMakeLists
+[33ma1153e8b[m [Hydrus XI] refactor the description about dependency
+[33m3ff3e4eb[m [Spinal][RQT] fix the wrong list assignment
+[33m9df7ca5c[m [Spinal][RQT] fix the import bug for python3
+[33m2f9f80a2[m Merge pull request #534 from tongtybj/develop/servo/round_offset_calib
+[33m3c6dc85b[m Merge pull request #531 from tongtybj/PR/spinal/motor/pwm
+[33mcd6a8667[m Merge pull request #533 from tongtybj/PR/feature/spinal/can_comm
+[33m60448299[m Merge pull request #530 from tongtybj/PR/spinal/rosserial
+[33mb12148fc[m Merge pull request #532 from HarukiKozukapenguin/PR/spinal/untracking
+[33m73699f84[m [Spinal] update .gitignore
+[33m7f5003af[m [Spinal] remove unnecessary debug files
+[33m03adb2b5[m [Spinal][motor][PWM] set the desired PWM output to timer handllers regardless of the CAN connection
+[33m465aae52[m [Spinal][rosserial] use UART for STM32H7 as default
+[33ma16f34c2[m Merge pull request #529 from tongtybj/PR/CmakeLists
+[33md3ee42be[m [stm32h7_nucleo] correct the cmake version
+[33mdef5c91c[m [Dragon] add auto joint rough calib script in launch file
+[33mc1dba3a0[m [Spinal] fix bug about auto script to calibrate joint
+[33m006497b0[m [Neuron] refactor the servo calibrate procedure
+[33mf9257cb4[m [Spinal] add automatic joint servo round calibration script to update the round offset.
+[33mbd303166[m [Spinal][Neuron][Servo] enable to manually update the round offset for servo motor becuase of the round offset caused by pulley
+[33m90d58d52[m [Spinal] refactor the process when no nueron connected
+[33m80922293[m [Robot Model] fix bug in CMakeLists.txt
+[33m6a313b14[m [Robot Model] further refactor the robot model framework
+[33m77692584[m [Robot Model] refactor aerial robot model to support general multirotor as the base robot model
+[33m14d3f71d[m Merge pull request #524 from tongtybj/PR/feature/mocap/udp
+[33ma7e0e7a7[m Merge pull request #523 from tongtybj/PR/simulation/rotor_interface
+[33ma6d4fdfa[m Merge pull request #522 from tongtybj/PR/feature/spinal/rosserial
+[33m02325fda[m Merge pull request #519 from tongtybj/PR/spinal/motor_number
+[33medbd754a[m [Mocap] refactor the subscruber transport hint for pose subscriber
+[33m544a3d74[m [Simulation][Rotor] do not add noise if the target PWM is zero (or close to zero)
+[33m4fd3b8f9[m [Spinal][rosserial] increase the size of OUTPUT_SIZE for publisher
+[33md46ad8e0[m [Spinal] refactor the callback process according to the value of motor_number
+[33meb7419de[m Merge pull request #518 from tongtybj/PR/feature/rqt/servo
+[33m36b5d4c3[m Correct the parsing about the servo information from spinal
+[33mf4a15746[m[33m ([m[1;33mtag: 1.3.1[m[33m)[m 1.3.1
+[33m4144427a[m Correct the package version
+[33m64dfa3d4[m Update CHANGELOG.rst for all packages
+[33mfd52ab80[m Merge pull request #517 from tongtybj/PR/feature/gihub/action
+[33mc63028a6[m [Github Action] do not cancel all in-progress in ros_test jobs.
+[33m99009996[m Merge pull request #499 from tongtybj/PR/feature/servo_interface
+[33mb9a2aa27[m Merge pull request #514 from tongtybj/PR/dragon/imu/lpf
+[33m3e1f5073[m Merge pull request #515 from tongtybj/PR/feature/destruction
+[33mb9fd1695[m Explicitly stop timer and async spinner for safe destruction.
+[33m37453378[m [Spinal] fix the bug about rosparam list because of the new servo bridge rule
+[33mfefd8f57[m [Servo Bridge] improve the servo bridge process between spinal (spinal_ros_bridge) and ros system, which introduces common topics shared in different servo groups (e.g., joint, gimbal)
+[33m353bd32c[m Work around to support full servo sending mode
+[33md4ebe33d[m Add LPF for gyro data from IMU for dragon state estimation
+[33mc779371e[m Remove unecessary workaround for DRAGON robot, which should use the filtered gyro data. The LPF is applied in ros side.
+[33m1bff8362[m Merge pull request #498 from tongtybj/PR/feature/spinal/model_assign
+[33m8300c3ba[m [Spinal] simplify the model assingment process in spinal, which puts the priority on the designation from ros system
+[33m339a4c28[m Merge pull request #504 from tongtybj/develop/feature/STM32H7
+[33mff0c62a2[m Merge pull request #513 from tongtybj/PR/github_action/python3_check
+[33m4e1c7d75[m Fix the wrong python version in python3 check script
+[33mba382b79[m Merge pull request #511 from tongtybj/PR/feature/CAD/inertia_tensor
+[33m6a79a407[m Merge pull request #497 from tongtybj/PR/dragon/new_rotor
+[33m8db3f34b[m Merge pull request #510 from tongtybj/PR/noetic_rqt
+[33m4d792730[m Refactor the python scripts for rqt gui compatible in ros noetic
+[33m983c0df1[m Fix the catkin_lint bug
+[33mfeb661ce[m Merge pull request #509 from sugihara-16/pull_request_test
+[33md817e955[m Update the subscriber initialize process in spinal to be compatible for new rosserial library
+[33me3e90bb2[m Update the launch file for spinal bridge
+[33m9228dd2f[m Remove unnecessary package: spinal_ros_bridge
+[33ma4460bd5[m Add new spinal bridge launch which support both serial and udp
+[33mdb94fe59[m Merge remote-tracking branch 'origin/master' into develop/feature/STM32H7
+[33mca612f7c[m modified README.md for motor test.
+[33m8411f84e[m Merge pull request #507 from tongtybj/PR/noetic
+[33m2edf029a[m Modify the pwm input process, remove unnecessary condition
+[33m56313fa0[m Correct the configuration for PWM setting in STM32H7
+[33m70cd23e8[m Revert NERVE_COMM macro for main.cpp to skip spine process
+[33mff844240[m Merge pull request #502 from tongtybj/PR/control/fully_acutated
+[33m794bddb5[m Merge remote-tracking branch 'origin/master' into PR/control/fully_acutated
+[33m66543ce6[m Refactor the shell script to start STM32CubeIDE
+[33me50e5e81[m Merge remote-tracking branch 'origin/master' into develop/feature/STM32H7
+[33md705ccfe[m Fix wrong dependency in CMakeLists.txt
+[33mfa33979d[m Work around for catkin lint to skip the check on unsupported repositories
+[33meaeb973f[m Fix the bug about dependency
+[33m82e29c38[m Add other dependency repository for catkinlint
+[33mf2822a3d[m Refactor package.xml and CMakeLits.txt for all pakcages to satisfy catkinlint
+[33m3a44850b[m Refactor the rqt libraries for spinal&neuron
+[33m88a6f95a[m Add run dependency of xacro
+[33m3f98bf00[m Update the catkin test command to run rostest for ubuntu focal (ros noetic)
+[33mbf0c4567[m Add github action to check python scripts
+[33m31708fe9[m Enable compability of python scripts in python3
+[33ma97bc7ab[m Install build-essential in CI
+[33m3bcbef1d[m Fix the repository info of kalman_filter for ros noetic
+[33mc0b964d0[m Add noetic test in github action
+[33m218bf459[m Update the version of ros dependency (i.e., sensor_interface, kalman_filter, rosserial)
+[33mfdb05fee[m Add dependency for ubuntu focal
+[33m31abe4f3[m Explicitly set the joint angle threshold for hydrus flight test
+[33mf08bcf8b[m Correct python format to be compatible for python3
+[33m78de9076[m state_publisher -> robot_state_publisher
+[33mdf2b6a20[m Remove unecessary dependency for KDL library
+[33m2ee1ff63[m Improve the ros spin process: - use separate async_spinner for subscriber/timer callbacks (4 threads) and main control loop (1 threads) - remove an independent thread for state publish, which is merged to async_spinner for subscriber/timer callbacks - use primary IMU time stamp for state publish header
+[33mc4847f5e[m Remove unnecessary dependent header
+[33m51db7b1d[m Fix the incomplete condition description
+[33mcf9f474b[m Fix the bug of non-return function for boolean function
+[33m78aff405[m Replace spinal_ros_bridge with rosserial_server for robot launch files
+[33m29959156[m Remove spinal_ros_bridge which is replaced by rosserial
+[33m8672211d[m Merge pull request #506 from tongtybj/PR/github_action
+[33mad470417[m Merge pull request #503 from tongtybj/PR/README
+[33m7b1c2eee[m Fix wrong variable substitution from .travis.yml
+[33mf3ab745b[m Fix variable in .travis.sh
+[33mc78492c4[m Add github action CI
+[33m1567f751[m Update README information
+[33mfe47b37a[m Merge pull request #505 from tongtybj/PR/travis
+[33m8fbc174c[m Add several missed gazebo files for ground plane
+[33me5fbd62f[m [Spinal] Fix the warning of "no return statement in function returning non-void"
+[33mdd78efa0[m Manually download ground plane model for gazebo in kinetic when using CI
+[33m94e6e722[m Update travis.sh for older version ros (e.g. kinetic)
+[33m5b860be6[m Correct the repository name for travis CI
+[33m8db145e6[m Fix the bug in fully actuated controller
+[33maf0c6534[m Resolve the problem of ETH handler timeout bug
+[33md0df55af[m [STM32H7 Nucleo] increase the stack size for voltage ADC RTOS thread for sovling rosserial publish isuue in RTOS Ethernet mode
+[33m618e12fc[m [STM32H7 Nucleo] implement ethernet for spinal STM32H7
+[33m70f469ad[m [Dragon] increase the wait time for dragon init pose in gazebo + rostest
+[33me96e7eed[m Merge pull request #496 from tongtybj/motor_test
+[33ma144dae9[m update the git version of sensor_interface
+[33m44d5b9a3[m [Dragon] update the dragon model for new thrust system
+[33m29689f54[m [Dragon] update the inerital paramter for dragon links, which shift to LiHV battery (6s 1300mAh) from Lipo.
+[33maba83d4b[m [STM32H7 Nucleo] refactor the project file path setting to remove the workaround libraries
+[33m9694d983[m [STM32F7/H7 spinal] refactor CAN related files in Jsk_Lib and Hydrus_Lib to enable CANFD for spinal with STM32H7
+[33m47ad1a11[m [STM32F7/H7 spinal] enable CANFD for spinal with STM32H7, but the library is temporary developed in STM32H7 Nucleo
+[33mc831da8e[m [STM32H7 NUCLEO] correct the file path configuration
+[33med1b5233[m - Migrate sensors (e.g. IMU, Baro, GPS) handling in STM32H7 board and state estimation. - Refactor FlashMemory handler to enable parameter writing.
+[33m65312bd9[m [STM32F7/H7 spinal] implement UART for rosserial with STM32H7, also refactor the file structure to support different ros_lib for different boards
+[33md4201781[m Fix the bug about the conversion of inertia tensor from SolidEdge
+[33m66f47c7a[m [STM32H7 spinal]  shift to FreeRTOS mode for LED blink sample
+[33mb8b01a58[m [STM32H7 spinal] update the STM32CubeMX project version from 6.1.2 to 6.4.0 for STM32H7 Nucleo (library is still 1.8.0)
+[33mdcd1feac[m [STM32H7 spinal] change to C++ based project
+[33m865ffd2c[m [STM32H7 spinal] has simple LED blink sample
+[33m51816fb9[m Merge pull request #5 from tongtybj/PR/feature/STM32H7_UART_DMA
+[33m3a4f29d7[m [Spinal] Correct the path to generate ros_lib by CMakeLists.txt
+[33mdb0ecba1[m Merge remote-tracking branch 'public/develop/feature/STM32H7' into PR/feature/STM32H7_UART_DMA
+[33m8c944fc8[m [STM32H7 UART rosserial] revert the default setting for the rosserial to determine whether supports RTOS and Ethernet
+[33mba8e3c36[m [STM32CubeMX] update the STM32CubeMX project version from 6.1.2 to 6.4.0 for STM32H7 Nucleo (library is still 1.8.0)
+[33m8f8301be[m [STM32H7 UART rosserial] support the switch between UART and Ethernet by jumping A0 port with 3.3V. Also restore the CANFD test mode
+[33mc1946302[m [STM32H7 UART rosserial] improve the MPU setting for UART DMA region. Please refer to https://www.keshikan.net/gohantabeyo/?p=563#fn3
+[33m51bf1c9e[m [STM32H7 UART rosserial] enable rosserial via UART TX with DMA. Implement MPU, SRAM D1 settings for DMA. Note: need to set unchacheable for UART TX buffer memory zone (different with Ethernet configuration)
+[33m5bf992a1[m [STM32H7 UART rosserial] enable rosserial via UART RX with DMA. Implement MPU, SRAM D1 settings for DMA.
+[33m226298e2[m [CANFD] avoid modification in spinal/mcu_project to supress the side effect on STM32F7 boards
+[33m447f7a69[m [CANFD] add CANFD test model for NucleoH743ZI board. Please check readme.md
+[33m2ac754a9[m [Spinal] update the STM32CubeMX project version from 6.0.1 to 6.4.0 for STM32F7, and also use library with version of 1.6.2 for STM32F7. Check the performance with rosserial, CAN
+[33m58f3518f[m [Spinal] fix bug about the path of spinal library
+[33m091cf39d[m [Spinal] - Correct STM32CubeMX setting for STM32H7 - Generate cubeIDE project for STM32H7
+[33m657d26fe[m [Spinal] refactor the file structure to support more types of board
+[33m94cf741e[m [Spinal] Remove depreacated TrueStudio project for spinal
+[33ma0c59312[m [STM32H7 project] add .ioc files (chip configuration) for spinal and neuron
+[33m532ddb31[m Support different series of force sensor for motor thrust test
+[33md691f821[m[33m ([m[1;33mtag: 1.3.0[m[33m)[m 1.3.0
+[33mc0cfdee2[m Update CHANGELOG.rst
+[33meb934ec5[m Merge pull request #483 from tongtybj/PR/feature/RTOS
+[33md1e0a000[m Merge pull request #417 from JSKAerialRobot/rtos
+[33md12829a3[m Merge pull request #416 from JSKAerialRobot/mag_encoder
+[33mca8428a6[m[33m ([m[1;33mtag: 1.2.2[m[33m)[m 1.2.2
+[33m97e1c2a7[m Update CHANGELOG.rst
+[33mefc9478c[m Merge pull request #492 from tongtybj/PR/feature/flight_nav_mode
+[33ma5332093[m Fix bug when switching the flight navigation mode in x,y,z,yaw
+[33m3092835b[m Merge pull request #487 from knorth55/dragon-urdf-name
+[33m4a9cd572[m fix name in dragon.urdf.xacro
+[33m6749bbdd[m [CAN FD] implement full CANFD mode (8Mbps for 64 data bytes). Also support CAN2.0. Tested with spinal-neuron system
+[33m82df9fd5[m [CANFD] enable classic CAN TX/RX format via CANFD mode.
+[33m0c532faa[m [CANFD] implement CANFD connection in NucleoH743ZI based on classsic mode (CAN2.0). Workaround to modifiy Hydrus_Lib and Jsk_Lib to support STM32H7
+[33mf247d38a[m [rosserial] Fix bug: make variables of ros::subscriber as global variables.
+[33m18b33f9b[m Merge pull request #484 from chibi314/plane_detection_dynamic_offset
+[33mb699703f[m Merge pull request #2 from tongtybj/PR/feature/RTOS_UART_TXDMA
+[33m7ddfc900[m [rosserial] add C++14 flag for C++ compiler
+[33me20971d5[m Remove unnecessary files
+[33mfcce3a4f[m Update README.md
+[33m9a8ed69e[m [rosserial Ethernet] refactor rosserial for ethernet connection - set stm32h7_nucleo as a separate package from spinal - refactor STM32Hardware.h/.cpp in ros_lib and rosserial make_library.py to handle RTOS and ethernet support (WIP) - add custom target of rosseial make_library inCmakeLists.txt to enable catkin build to generate ros_lib
+[33mf64c41df[m [STM32F7] implement ethernet in RTOS mode. Be careful about stack size for each task - coreTask: 512 words, need sufficient size for MX_LWIP_Init(), which also generate another task for LWIP - rosSpinTask: 256 words, need twice than UART mode, since the ring buffer for RX
+[33mc97bb558[m Update version of library for stm32h7 from 1.3.2 to 1.8.0.
+[33m045bd8d1[m Remove unecessary modules from STM32CubeMX
+[33ma9ebc953[m Convert to STM32CubeIDE. Be careful of linker script, refer to https://community.st.com/s/question/0D53W00000V1AY9/does-anyone-know-how-this-error-can-be-solvederror-cannot-find-the-specified-linker-script-check-the-linker-settings-in-the-build-configuration
+[33m61697fba[m Refine the load test script to know the lost frames of publisher topics
+[33m6d21b709[m Refactor NodeHandleSTM_ class. - remove necessary implementation to handle ARP request - move LWIP (ehternet) process to spinOnce function
+[33m118f633f[m Update README.md
+[33m3e27bd0d[m Add load (stress) testing code: - imu msg published from device at 1000Hz - servo control msgs, cotaining 14 joints, published to deveice at 500Hz.
+[33m404f0f56[m Implement the rosserial based on ethernet UDP for stm32H7. - Add the Truestdio project - Refactor the ros_lib to be suitable for UDP
+[33m3478b1a3[m [rosserial] add UDP scoket session for spinal_ros_bridge
+[33mfbd997f4[m [rosserial] fix the bug about semaphore in UART DMA TX. Semaphore has 1 at the beginning.
+[33md050055c[m [rosserial] Implement rosserail UART TX via DMA, whcih is unstable yet. Please consider further development
+[33ma9ce8ea5[m [aerial_robot_estimation] add dynamic offset calculation in plane detection plugin
+[33m6be4620c[m[33m ([m[1;31mkaneko/sugito/rtos2[m[33m)[m [Neuron] fix bug about the wrong bit mask for servo error status
+[33mb5a64620[m [Neuron RTOS] improve I/O connection with Dynamixel Servo
+[33m993b3d83[m [RTOS] improve the process about flash memory read, especially for the initalization in Neuron.
+[33m877cd72c[m [Neuron RTOS] use DMA for Dynamixel UART RX to improve the receive perofmance. Previous polling method always corrupts because of the RTOS system
+[33m1412aa20[m [Spianl RTOS] increase the stack size for CAN RX task to handle the laget message from Neuron. Otherwise, the hard fault occurs because of the wrong memory access.
+[33md19ea431[m [Neuron RTOS] fix bug about servo in RTOS
+[33m80a62123[m [Neuron] correct the configuration about Timer for motor PWM. Need -1 for counter period.
+[33mb1b21138[m [Neuron RTOS] enable servo process in RTOS. Use an independent task for servo process
+[33md3c5d148[m [Neuron RTOS] implement RTOS for neuron.
+[33m0d1f8015[m [Neuron]  Complete conversion from TrueStudio to STM32CubeIDE of which the project is generated from STM32CubeMX. Important feature: set main.cpp as synbolic link of main.c
+[33m5bcf8889[m [Spinal RTOS] add mutex for flight control
+[33mbd2db283[m [Spinal rosserial] refactor the uart process for rosserial. Seperate larget message into several small packets to imrpove the transmit throughput
+[33md16995b4[m [Spinal RTOS] mutex for rosserail publisher. Important note: we need to provide enough stack size for core task (512B -> 1024B); otherwise, rosPublishTask will corrupt.
+[33m72109e54[m [Spinal rosserail] refine the recovery action when rosserial in Spianl stuck
+[33m940a271b[m [Spinal RTOS] enable GPS in RTOS
+[33m2edeef45[m [Spinal RTOS] enable battery voltage ADC measurement in Spinal.
+[33m82c2b6fe[m [Spinal RTOS] increase the queue size for CAN RX
+[33m1693580a[m [Spinal RTOS] refactor the RTOS part for CAN RX in spinal
+[33mbc580dd2[m [Spinal RTOS] solve the hard default problem caused by callback function of intializer in RTOS task
+[33m2aa6ff96[m [Sipnal RTOS] revert the timeout value for rosserial uart transmit tx
+[33m5fcad36d[m [Spinal RTOS]: enable CAN in RTOS
+[33m410dedc4[m Modify the CAN sampling point from 55% to 83% which maybe better
+[33mfc4e05c8[m [Spinal RTOS]: enable core process (IMU sensor polling, attitude estimation, flight control) to RTOS
+[33m0f5a8e63[m Update to STMCubeMX 6.0.1 and update the HAL Driver for STM32F4xx to 1.25.1
+[33m83024e73[m [Spinal RTOS]: enable rosserial function in RTOS mode
+[33m9f430570[m Enable "AutoRetransmission" for CAN transmission arbitration, which corresponds to disable "NonAutoRetransmission(NART)" in old HAL version.
+[33m309a8366[m [Spinal RTOS]: add "__weak" modifier for callback function for RTOS function
+[33m0e08128e[m Revert the pause/restart function for CAN in neuron with the latest HAL_DRIVER library.
+[33m7b6bde49[m [Spinal RTOS]: sample to use RTOS timer
+[33mf7ba8d7a[m Refactor the API, particulary about CAN, to migrate to the latest HAL_DRIVER library (STM32Cube FW_F4 V1.25.0)  for neuron.
+[33mafb318a1[m [Spinal RTOS]: test default task without timer
+[33mce9ba449[m Refactor DMA implementation for UART RX - no use of  DMA interrupt for transfer completion, direct incremental write to ringbuffer in SRAM from UART port. - no 1ms sleep between tx packets from spinal_ros_bridge, thanks for the first improvement - no use of FIFO of DMA and burst mode, thus no 16bytes padding in spinal_ros_bridge
+[33m438856e2[m Complete conversion from TrueStudio to STM32CubeIDE of which the project is generated from STM32CubeMX
+[33m4f6befdf[m update neuron cube_ide.sh
+[33m7ff29f7e[m change gcc/g++ opt into -O0 and now it works (at least on the table, not tested on the robot yet)
+[33m05c68a83[m add cubeide launch script
+[33md56be888[m convert spinal into CubeIDE, files under Debug may be unnecessary
+[33m0c53c831[m Convert neuron project from TrueSTUDIO to CubeIDE
+[33me598d93c[m Automatically set resolution ratio to 1:1 when select the servo internal encoder.
+[33m7ad4aa74[m Refactor the API, particulary about CAN, to migrate to the latest HAL_DRIVER library (STM32Cube FW_F7 V1.16.0)  for spinal.
+[33mc4f2bf26[m Add external encoder for joint in neuron, combining with the servo part
+[33m49b55db7[m Implement magnetic encoder i2c interface
+[33mb65e8f37[m Merge pull request #482 from chibi314/add_wiki_images_for_rtk_gps_troubleshooting
+[33m3a72a70d[m add images for RTK-GPS trouble shooting section in wiki
+[33mc3fa3a59[m Merge pull request #476 from kanke-hayata/feature/teleop_ctrl_mode
+[33mab239038[m fix bug about switching flight ctrl mode by teleop
+[33me7f61a82[m Merge pull request #477 from chibi314/add_hydrusx_prop_15inch_model
+[33md128e26e[m [hydrus] add mesh file for 15inch prop model
+[33mb96eaf91[m [hydrus] add tilt_10deg_15inch_202106 model
+[33m07018897[m [hydrus] add prop_15inch arg in link.urdf.xacro
+[33m805d2dcd[m Merge pull request #474 from tongtybj/vectoring_control_for_merge_interference_comp
+[33m09c61f38[m Merge pull request #472 from tongtybj/rtk_gps
+[33m94bc83b5[m - Fix a critical bug about the external wrench estimation, which has existed in the last real machine experiment (2020.06-07, RAL submittted). - Modifiy the estimation LPF factor. Confirmed the validty with the real machine (roll 1.57, vertical transformation mode0) - Fix bug about wrong variable name in spinal
+[33m6bd01bd1[m - modify UBlox NEO M8N configuration - add UBlox NEO M9N configuration
+[33m74174a7d[m Add launch and yaml files for RTK GPS
+[33m414b166a[m Enable the special spinal IMU publisher for DRAGON in simulation mode
+[33m8fc74c91[m Create a special derived IMU sensor plugin for dragon with full-vectoring control method to avoid the dirty hard-coding in the original IMU sensor plugin.
+[33m8539a85c[m Merge remote-tracking branch 'origin/master' into vectoring_control_for_merge_interference_comp
+[33mef790e5b[m Merge pull request #470 from JSKAerialRobot/feature/acc_nav
+[33m0d0d833f[m enable acc nav mode via teleop_command/ctrl_mode
+[33mbda83c52[m Merge pull request #468 from chibi314/fix_lqi_controller_log_message
+[33m24d4ff60[m Merge pull request #467 from tongtybj/rosdep
+[33m507aa042[m [hydrus] fix log message of gain reconfiguration in hydrus_lqi_controller.cpp
+[33m22bf3ee7[m Add Sun Gazebo model for ros kinetic
+[33md6d3ba2e[m Merge pull request #465 from chibi314/fix_for_optitrack_new_version
+[33md73db165[m Add "--include-eol-distros" option for rosdep to allow building for ros-kinetic distro
+[33m4248433b[m Implement RTK GPS for sensor fusion, whcih support using with normal  GPS at the same time
+[33m0eeaebaf[m add topic remap in mocap.launch
+[33ma4980fce[m Merge pull request #464 from tongtybj/mocap_optitrack
+[33m271d2568[m Use the official mocap_optitrack installed from debian package
+[33m7656015e[m Merge pull request #460 from greenpepper123/master
+[33mf9e848ef[m Merge pull request #458 from tongtybj/gps_mag
+[33mb740d127[m fix gimbal link module weight (again)
+[33mfc509290[m Refactor the exteranl magnetometer interface and add LIS3MDL as the default magnetometer
+[33mfc914555[m Merge pull request #451 from kanke-hayata/robot_id_for_mocap
+[33m90a9a073[m robot id for mocap.launch
+[33m0abebbbf[m Merge pull request #449 from kanke-hayata/enable_acc_nav_mode
+[33mebd6681e[m fixed bug: enable acc nav mode
+[33m5e2f8fd0[m[33m ([m[1;33mtag: 1.2.1[m[33m)[m 1.2.1
+[33m85d74b46[m Update CHANGELOG.rst
+[33mc95972e0[m Merge remote-tracking branch 'origin/master' into vectoring_control_for_merge_interference_comp
+[33mfb92548d[m Merge pull request #444 from tongtybj/control_saturation
+[33m00c2091a[m Add rostest for full vectoring control
+[33m3db0f92c[m Disable interference compensation for simulation
+[33mc95b85b5[m Revert the inertial paramter for gimbal roll module, since the modified values induced best dynamics result in gazebo. The different between reverted values and the modified values are very small, which has no influence for the real machine
+[33mbfbda065[m Tuning parameter about the external wrench observer, confirming bettwer performance about aerointerference compensation
+[33m97f4dede[m Change the half_pi form 1.57 to 1.56 in dragon transformation demo script
+[33mfaaaf44c[m Update the inertial parameters since some components are changed in dragon
+[33m8da315b1[m Visualize the aerointernference
+[33mae77f1d6[m Refactor the smoothing algorithm for gimbal roll locking process
+[33m086091c8[m Add demo script for vertical transformation
+[33mbd55e235[m Refactor the rotor interference torque compensation condition
+[33m800c59a8[m Add mutex to memory corruption
+[33mce1422dc[m Implement the compensation for the rotor overlap interference by external wrench estimation.
+[33m7e983572[m Implement the external wrench estimation inside dragon controller
+[33m9bfa5dc2[m add <numeric> for melodic
+[33me7b070be[m Param Tuning
+[33mcee619a7[m Refactor the force landing process to be more robust
+[33m0da491ea[m Solve the singularity problem in XYZ Euler when do dragon landing
+[33m6c709803[m Fix the wrong I control for roll and pitch in takeoff phase
+[33mde20e0b8[m Implement allocation (target vectoring force -> target thust and target gimbal angles) iterative refinement process, which is same with the process to get the hovering force.
+[33m3ac5e922[m Parameter Tuning
+[33m643c6d98[m Implement the full vectoring control for dragon and also the gimbal roll lock modelling
+[33m64db2ab8[m Refactor the process to avoid satuation in z and yaw axes
+[33m2358a6a7[m Merge pull request #441 from tongtybj/circle_trajectory_following
+[33mdc4c21a9[m Merge pull request #443 from tongtybj/rostest
+[33mbe3405c3[m Merge pull request #440 from tongtybj/spinal
+[33md55ce3a3[m Increase the retry times for Dragon and Hydrus gazebo test in Travis
+[33m1149ca85[m Merge pull request #442 from tongtybj/rosserial
+[33m3b0c40eb[m Revert the wrong modification by https://github.com/tongtybj/aerial_robot/pull/422, and also extend the sleep time to handle more sub/pub/srv from spinal.
+[33m72c1e085[m - Add script to follow a circle trajectory. - Fix bug about the waypoint to current position
+[33m0538723d[m Update the subscribe for the wrench data

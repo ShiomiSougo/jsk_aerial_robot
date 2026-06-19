@@ -2,7 +2,8 @@
 # -*- coding: utf-8 -*-
 
 """
-Hydrus-Xi 連続変形シーケンス実行スクリプト（ゴール直前ソフトランディング減速＆静定ウェイト版）
+Hydrus-Xi 連続変形シーケンス実行スクリプト（CasADi等式制約対応・完全版）
+ゴール直前ソフトランディング減速＆静定ウェイト版
 
 使用例:
   python hydrus_xi_deformation_sequence.py 0.0 -1.0 0.0
@@ -99,7 +100,8 @@ class HydrusXiDeformationSequencer:
                 msg.position.append(999.0)  # 位置PID遮断フラグ
                 msg.velocity.append(0.0)
                 dq = self.current_dq['joint1']
-                torque_cmd = -math.copysign(0.05, dq) if abs(dq) > 0.005 else 0.0
+                # 💡 修正：動作方向と反対に 0.01 Nm の微小抵抗（ダンピング）を出力
+                torque_cmd = -math.copysign(0.01, dq) if abs(dq) > 0.005 else 0.0
                 msg.effort.append(torque_cmd)
                 
             # === ② Joint 3 の純空力変形中（Step 5）===
@@ -107,7 +109,8 @@ class HydrusXiDeformationSequencer:
                 msg.position.append(999.0)  # 位置PID遮断フラグ
                 msg.velocity.append(0.0)
                 dq = self.current_dq['joint3']
-                torque_cmd = -math.copysign(0.05, dq) if abs(dq) > 0.005 else 0.0
+                # 💡 修正：動作方向と反対に 0.01 Nm の微小抵抗（ダンピング）を出力
+                torque_cmd = -math.copysign(0.01, dq) if abs(dq) > 0.005 else 0.0
                 msg.effort.append(torque_cmd)
                 
             # === ③ 予張力生成中、保持関節、および静定待機フェーズ ===
@@ -126,12 +129,13 @@ class HydrusXiDeformationSequencer:
     def _calculate_target_moment(self, joint_name):
         """
         🛠️ 【全域一定速度＋特異点・ゴール直前ソフトランディング減速モデル】
-        目標地点に近づくにつれてプロペラの風を自律的に弱め、衝突現象と逆戻りをねじ伏せる。
+        目標地点に近づくにつれてプロペラの風を自律的に弱め、衝突現象と逆戻りを防ぐ。
         """
         angle_diff_to_final = self._get_angle_difference(self.current_q[joint_name], self.target_q[joint_name])
         
-        P_GAIN = 0.8  # 減速領域でも確実に応答させるため、ゲインを少し高めに設定
-        MAX_DRIVE_TORQUE_BASE = 0.06  # 通常巡航時の風の最大出力
+        # 💡 修正：C++が等式制約で正確に応答するため、Pゲインと最大トルクを実際の物理スケールに最適化
+        P_GAIN = 0.3  # (元 0.8) 実トルクに直接反映されるためゲインを適正化
+        MAX_DRIVE_TORQUE_BASE = 0.3  # (元 0.06) 目標とする最大発生トルク 0.3Nm を上限に設定
         
         # 1. 基礎となる目標モーメント命令値
         tau_des = P_GAIN * angle_diff_to_final
