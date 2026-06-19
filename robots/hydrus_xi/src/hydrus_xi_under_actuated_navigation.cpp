@@ -146,21 +146,24 @@ namespace
     return planner->getFCTMinThresh() - planner->getRobotModelForPlan()->getFeasibleControlTMin();
   }
 
-  // ===== ★ 新設: NLopt用の等式制約（Hard Constraint）関数 =====
-  // 誤差をペナルティにするのではなく、この関数が 0 になるようにソルバーを強制的に動かします。
+  // ===== ★ 新設: NLopt用の等式制約関数（モデル更新付き） =====
   double targetMomentEqualityConstraint(const std::vector<double> &x, std::vector<double> &grad, void *planner_ptr)
   {
     HydrusXiUnderActuatedNavigator *planner = reinterpret_cast<HydrusXiUnderActuatedNavigator*>(planner_ptr);
+    auto robot_model = planner->getRobotModelForPlan();
     
-    // コマンドが来ていない場合は、制約なし(0.0)として通過させる
-    if (!planner->hasMomentCommand() || planner->getTargetJointIndex() < 0) {
-      return 0.0; 
+    // 1. ソルバーが試行中の角度 x でモデルを仮更新
+    KDL::JntArray joint_positions = planner->getJointPositionsForPlan();
+    for(int i = 0; i < x.size(); i++) {
+        joint_positions(planner->getControlIndices().at(i)) = x.at(i);
     }
+    robot_model->updateRobotModel(joint_positions);
 
-    // 厳密な空力レンチ計算による現在の関節トルクを取得
-    double current_tau = planner->computeExactInternalMoment(x, planner->getRobotModelForPlan());
-    
-    // (現在の計算トルク) - (目標トルク) の差分を返す
+    // 2. コマンドチェック
+    if (!planner->hasMomentCommand() || planner->getTargetJointIndex() < 0) return 0.0; 
+
+    // 3. 最新モデルを用いてトルク誤差を計算
+    double current_tau = planner->computeExactInternalMoment(x, robot_model);
     return current_tau - planner->getTauDesTarget();
   }
 
@@ -239,8 +242,8 @@ void HydrusXiUnderActuatedNavigator::initialize(ros::NodeHandle nh, ros::NodeHan
   vectoring_nl_solver_->add_inequality_constraint(baselinkRotConstraint, this, 1e-8);
 
   // ===== ★ 等式制約の登録 =====
-  // トルク誤差の許容範囲を 1e-3 (0.001 Nm) としてハード制約を追加
-  vectoring_nl_solver_->add_equality_constraint(targetMomentEqualityConstraint, this, 1e-3);
+  // 厳密すぎると解が見つからず推力飽和を起こすため、誤差閾値を 2e-2 に緩和して登録
+  vectoring_nl_solver_->add_equality_constraint(targetMomentEqualityConstraint, this, 2e-2);
 
   vectoring_nl_solver_->set_xtol_rel(1e-4);
   vectoring_nl_solver_->set_maxeval(1000);
@@ -441,7 +444,6 @@ void HydrusXiUnderActuatedNavigator::momentCommandCallback(
 }
 
 // ===== ★ 【修正・厳密化】完全な運動学に基づく内部モーメント計算 =====
-// ===== ★ 【修正・厳密化】完全な運動学に基づく内部モーメント計算 =====
 double HydrusXiUnderActuatedNavigator::computeExactInternalMoment(
     const std::vector<double>& gimbal_angles,
     const boost::shared_ptr<HydrusTiltedRobotModel>& robot_model_ptr)
@@ -507,6 +509,7 @@ double HydrusXiUnderActuatedNavigator::computeExactInternalMoment(
 
   return tau_internal;
 }
+
 // 推力抽出（現在は不使用ですが互換性のため保持）
 std::vector<double> HydrusXiUnderActuatedNavigator::extractThrustsFromOptVars(
     const std::vector<double>& x,
