@@ -436,36 +436,35 @@ double HydrusXiUnderActuatedNavigator::computeExactInternalMoment(
     return 0.0;
   }
 
-  // 💡 修正2: Wrench行列の基準(Root: link1)と完全に同期した順運動学を構築
-  // X軸・Y軸のねじれが消え、正しい方向の風が発生するようになります。
+  // 💡 修正2: Hydrus本来の構造（中央Joint2を原点に左右に広がる）に合わせた順運動学
+  // これによりX軸のねじれが消え、正しい方向の風（トルク）が計算されます。
   double L = 0.42; 
+  Eigen::Vector3d P_j2(0.0, 0.0, 0.0); // 中央のJoint2を原点とする
+
+  // --- 右側 (Link3, Link4) は X正 方向 ---
+  Eigen::Vector3d v3(1.0, 0.0, 0.0); 
+  Eigen::Vector3d P_l3 = 0.5 * L * v3;
+  Eigen::Vector3d P_j3 = L * v3;
   
-  // Link 1 (Root)
-  Eigen::Vector3d v1(1.0, 0.0, 0.0);
-  Eigen::Vector3d P_j1 = L * v1;
-  Eigen::Vector3d P_l1 = 0.5 * L * v1;
-
-  // Link 2
-  Eigen::Vector3d v2(std::cos(q1), std::sin(q1), 0.0);
-  Eigen::Vector3d P_j2 = P_j1 + L * v2;
-  Eigen::Vector3d P_l2 = P_j1 + 0.5 * L * v2;
-
-  // Link 3
-  Eigen::Vector3d v3(std::cos(q1+q2), std::sin(q1+q2), 0.0);
-  Eigen::Vector3d P_j3 = P_j2 + L * v3;
-  Eigen::Vector3d P_l3 = P_j2 + 0.5 * L * v3;
-
-  // Link 4
-  Eigen::Vector3d v4(std::cos(q1+q2+q3), std::sin(q1+q2+q3), 0.0);
+  Eigen::Vector3d v4(std::cos(q3), std::sin(q3), 0.0); 
   Eigen::Vector3d P_l4 = P_j3 + 0.5 * L * v4;
 
+  // --- 左側 (Link2, Link1) は X負 方向 ---
+  Eigen::Vector3d v2(-1.0, 0.0, 0.0); 
+  Eigen::Vector3d P_l2 = 0.5 * L * v2;
+  Eigen::Vector3d P_j1 = L * v2;
+  
+  Eigen::Vector3d v1(-std::cos(q1), -std::sin(q1), 0.0); 
+  Eigen::Vector3d P_l1 = P_j1 + 0.5 * L * v1;
+
+  // 機体全体の重心 (4リンクの平均)
   Eigen::Vector3d CoG = (P_l1 + P_l2 + P_l3 + P_l4) / 4.0;
 
-  // Root基準のCoGから対象関節へのベクトル $r$
+  // 重心から対象関節へのベクトル r
   Eigen::Vector3d joint_pos(0.0, 0.0, 0.0);
-  if (target_joint_index_ == 0)      joint_pos = P_j1 - CoG;
-  else if (target_joint_index_ == 1) joint_pos = P_j2 - CoG;
-  else if (target_joint_index_ == 2) joint_pos = P_j3 - CoG;
+  if (target_joint_index_ == 0)      joint_pos = P_j1 - CoG; // joint1
+  else if (target_joint_index_ == 1) joint_pos = P_j2 - CoG; // joint2
+  else if (target_joint_index_ == 2) joint_pos = P_j3 - CoG; // joint3
   
   Eigen::MatrixXd W = robot_model_ptr->calcWrenchMatrixOnCoG();
   if (W.rows() < 6 || W.cols() != thrusts.size()) return 0.0;
