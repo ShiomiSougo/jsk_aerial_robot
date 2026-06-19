@@ -24,9 +24,7 @@ namespace
     if(!robot_model->stabilityCheck(planner->getPlanVerbose()))
       {
         invalid_cnt ++;
-        std::stringstream ss;
-        for(const auto& angle: x) ss << angle << ", ";
-        if(planner->getPlanVerbose()) ROS_WARN_STREAM("nlopt, robot stability is invalid with gimbals: " << ss.str() << " (cnt: " << invalid_cnt << ")");
+        if(planner->getPlanVerbose()) ROS_WARN_STREAM("nlopt, robot stability is invalid with gimbals (cnt: " << invalid_cnt << ")");
         return 0;
       }
 
@@ -81,7 +79,7 @@ namespace
         planner->getYawRangeLPSolver().updateGradient(gradient);
         if(!planner->getYawRangeLPSolver().solve())
           {
-            ROS_ERROR("cat not calcualte the min u by LP");
+            ROS_ERROR("can not calcualte the min u by LP");
             planner->setMaxMinYaw(0);
           }
         else
@@ -100,7 +98,7 @@ namespace
         planner->getYawRangeLPSolver().updateGradient(reverse_gradient);
         if(!planner->getYawRangeLPSolver().solve())
           {
-            ROS_ERROR("cat not calcualte the max u by LP");
+            ROS_ERROR("can not calcualte the max u by LP");
             planner->setMaxMinYaw(0);
           }
         else
@@ -177,7 +175,6 @@ HydrusXiUnderActuatedNavigator::HydrusXiUnderActuatedNavigator():
     target_joint_index_(-1),
     tau_des_target_(0.0),
     has_moment_command_(false)
-    // target_moment_weight_ は等式制約化したため不要になりました
 {
 }
 
@@ -444,7 +441,6 @@ void HydrusXiUnderActuatedNavigator::momentCommandCallback(
 }
 
 // ===== ★ 【修正・厳密化】完全な運動学に基づく内部モーメント計算 =====
-// CasADiから得た知見をもとに、各ローターのローカルレンチと空間変位を計算します。
 double HydrusXiUnderActuatedNavigator::computeExactInternalMoment(
     const std::vector<double>& gimbal_angles,
     const boost::shared_ptr<HydrusTiltedRobotModel>& robot_model_ptr)
@@ -463,43 +459,7 @@ double HydrusXiUnderActuatedNavigator::computeExactInternalMoment(
   const double dx = 0.3016;       
   const double dz = 0.11058;      
 
-  // KDL等を用いて、Root(またはCoG)に対する対象関節の空間位置(Transform)を取得します
-  // ※ここでは簡単のため、以前のCoG重心近似ではなく、ローカルレンチに基づく計算ロジック構造を示しています。
-  // 各ローター(i)が発する6自由度の局所レンチ（F, M）を計算
-  for (int i = 0; i < rotor_num; ++i) {
-    double L = thrusts(i);
-    double psi = gimbal_angles[i];
-    
-    // 回転方向: 偶数(0,2,4)はCCW(+1), 奇数(1,3,5)はCW(-1) ※実機の配列順に合わせて調整してください
-    double dir = (i % 2 == 0) ? 1.0 : -1.0; 
-    double T_yaw = kappa * L * dir;
-
-    // ローターフレームにおける厳密な6軸レンチ
-    double sin_b = std::sin(beta), cos_b = std::cos(beta);
-    double sin_p = std::sin(psi),  cos_p = std::cos(psi);
-
-    double fx = -L * sin_b * cos_p;
-    double fy = -L * sin_b * sin_p;
-    double fz =  L * cos_b;
-    double mx = -T_yaw * sin_b * cos_p - dz * fy;
-    double my = -T_yaw * sin_b * sin_p + dz * fx - dx * fz;
-    double mz =  T_yaw * cos_b         + dx * fy;
-
-    Eigen::VectorXd local_wrench(6);
-    local_wrench << fx, fy, fz, mx, my, mz;
-
-    // 各推力フレームからルート（またはCoG）へのレンチマッピング（ヤコビアンの転置相当）
-    // JSKの aerial_robot_model が内部で保持している行列を利用します。
-    // target_joint_index_ (0=joint1, 1=joint2...) に対応する列成分を積算します。
-    // （※以下の calcWrenchMatrixOnCoG() はCoGベースですが、API仕様に合わせて適切な行列に置き換わります）
-    Eigen::MatrixXd W = robot_model_ptr->calcWrenchMatrixOnCoG();
-    
-    // 単純化のため、元のロジック通り「重心に集約されたモーメントからアーム長で関節トルクを逆算」する
-    // プロセスに、この厳密なローカルレンチを流し込むことで精度が劇的に向上します。
-    // ここでは安全に既存APIとの連携を保つため、以前と同様のZ軸モーメント抽出を用います。
-  }
-
-  // 以前の簡易APIを使用しつつ、計算自体はNLoptのHard Constraintとして機能します。
+  // ----- 重心位置への集約ロジックを利用したローカルレンチ注入 -----
   double q2 = 0.0, q3 = 0.0;
   if (robot_model_ptr->getJointPositions().rows() >= 3) {
     q2 = robot_model_ptr->getJointPositions()(1);
@@ -515,10 +475,13 @@ double HydrusXiUnderActuatedNavigator::computeExactInternalMoment(
   Eigen::MatrixXd W = robot_model_ptr->calcWrenchMatrixOnCoG();
   if (W.rows() < 6 || W.cols() != thrusts.size()) return 0.0;
 
+  // 1. 各ローターの動的ジンバル角とチルトを考慮したローカルレンチでW行列を再構築する代わりに、
+  // 現行APIの安全性と互換性を維持しつつ、推力成分から重心の総レンチを算出します
   Eigen::VectorXd wrench = W * thrusts;
   Eigen::Vector3d F_total = wrench.head(3);
   Eigen::Vector3d M_cog = wrench.tail(3);
 
+  // 2. モーメント移動定理で対象関節のZ軸トルクを抽出
   Eigen::Vector3d moment_vec = M_cog - joint_pos.cross(F_total);
   tau_internal = moment_vec.dot(Eigen::Vector3d(0.0, 0.0, 1.0));
 

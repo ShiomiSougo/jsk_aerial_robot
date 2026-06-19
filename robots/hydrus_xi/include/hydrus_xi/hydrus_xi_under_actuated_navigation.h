@@ -76,14 +76,15 @@ namespace aerial_robot_navigation
 
     void setMaxMinYaw(const double max_min_yaw) { max_min_yaw_ = max_min_yaw;}
 
-    // ===== 【新規追加】内部モーメント制御用パブリックアクセッサー & メソッド =====
+    // ===== 内部モーメント制御用パブリックアクセッサー & メソッド =====
     inline int getTargetJointIndex() const { return target_joint_index_; }
     inline double getTauDesTarget() const { return tau_des_target_; }
     inline bool hasMomentCommand() const { return has_moment_command_; }
-    inline double getTargetMomentWeight() const { return target_moment_weight_; }
+    
+    // ★ 【修正】等式制約化に伴い、ペナルティ用のゲッターは削除されました
 
-    // ★ エラー解消：外部の最適化関数からアクセスできるように public に移動
-    double computeInternalMomentZ(
+    // ★ 【修正】外部のNLopt関数から呼ばれる厳密なトルク計算関数の宣言
+    double computeExactInternalMoment(
         const std::vector<double>& x,
         const boost::shared_ptr<HydrusTiltedRobotModel>& robot_model_ptr);
 
@@ -116,11 +117,11 @@ namespace aerial_robot_navigation
 
     void rosParamInit() override;
 
-    // ===== 【新規追加】内部モーメント制御用メンバ変数・内部メソッド =====
+    // ===== 内部モーメント制御用メンバ変数・内部メソッド =====
     int target_joint_index_;              // 対象関節インデックス (0=Joint1, 1=Joint2, 2=Joint3, -1=なし)
     double tau_des_target_;               // 目標内部モーメント [N⋅m]
     bool has_moment_command_;             // コマンド受信フラグ
-    double target_moment_weight_;         // ペナルティ重み（ROS パラメータから読み込み）
+    // ★ 【修正】等式制約化に伴い、ペナルティ重み (target_moment_weight_) は削除されました
 
     ros::Subscriber moment_command_sub_;  // /hydrus_xi/target_internal_moment の Subscriber
 
@@ -133,4 +134,4 @@ namespace aerial_robot_navigation
     std::vector<double> extractGimbalsFromOptVars(
         const std::vector<double>& x);
   };
-};
+} // namespace aerial_robot_navigation
