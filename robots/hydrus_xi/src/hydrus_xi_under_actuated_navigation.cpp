@@ -415,67 +415,85 @@ void HydrusXiUnderActuatedNavigator::momentCommandCallback(
   has_moment_command_ = true;
 }
 
-// ===== ★ 【完全修正版】正確な順運動学に基づく内部モーメント計算 =====
+// ===== ★ 【究極版】URDFとCasADiの数式に完全一致する順運動学計算 =====
 double HydrusXiUnderActuatedNavigator::computeExactInternalMoment(
     const std::vector<double>& gimbal_angles,
     const boost::shared_ptr<HydrusTiltedRobotModel>& robot_model_ptr)
 {
-  if (!robot_model_ptr || target_joint_index_ < 0) return 0.0;
+  // target_joint_index_ は 0(joint1) から 4(joint5) まで
+  if (!robot_model_ptr || target_joint_index_ < 0 || target_joint_index_ > 4) return 0.0;
 
   Eigen::VectorXd thrusts = robot_model_ptr->getStaticThrust();
-  
-  // 💡 修正1: インデックスマップから正確に各関節の角度を取得
-  double q1 = 0.0, q2 = 0.0, q3 = 0.0;
+  if (thrusts.size() < 6) return 0.0;
+
+  // 1. 各関節の角度を正確に取得
+  double q[5] = {0,0,0,0,0};
   try {
     const auto& joint_map = robot_model_ptr->getJointIndexMap();
-    q1 = robot_model_ptr->getJointPositions()(joint_map.at("joint1"));
-    q2 = robot_model_ptr->getJointPositions()(joint_map.at("joint2"));
-    q3 = robot_model_ptr->getJointPositions()(joint_map.at("joint3"));
-  } catch (const std::out_of_range& e) {
-    ROS_ERROR_STREAM_THROTTLE(1.0, "Joint index not found: " << e.what());
+    q[0] = robot_model_ptr->getJointPositions()(joint_map.at("joint1"));
+    q[1] = robot_model_ptr->getJointPositions()(joint_map.at("joint2"));
+    q[2] = robot_model_ptr->getJointPositions()(joint_map.at("joint3"));
+    q[3] = robot_model_ptr->getJointPositions()(joint_map.at("joint4"));
+    q[4] = robot_model_ptr->getJointPositions()(joint_map.at("joint5"));
+  } catch (const std::exception& e) {
     return 0.0;
   }
 
-  // 💡 修正2: Hydrus本来の構造（中央Joint2を原点に左右に広がる）に合わせた順運動学
-  // これによりX軸のねじれが消え、正しい方向の風（トルク）が計算されます。
-  double L = 0.42; 
-  Eigen::Vector3d P_j2(0.0, 0.0, 0.0); // 中央のJoint2を原点とする
+  // 2. URDFとCasADiから判明した真の物理パラメータ
+  const double beta = 0.34906585; 
+  const double kappa = 0.0182;    
+  const double dx = 0.3016;       
+  const double L = 0.6; // URDFに基づく正確なリンク長
 
-  // --- 右側 (Link3, Link4) は X正 方向 ---
-  Eigen::Vector3d v3(1.0, 0.0, 0.0); 
-  Eigen::Vector3d P_l3 = 0.5 * L * v3;
-  Eigen::Vector3d P_j3 = L * v3;
+  Eigen::Vector3d P_L[6]; // 各リンクの原点（World座標）
+  double theta[6];        // 各リンクの絶対角度
   
-  Eigen::Vector3d v4(std::cos(q3), std::sin(q3), 0.0); 
-  Eigen::Vector3d P_l4 = P_j3 + 0.5 * L * v4;
+  // 3. link1(Root) を原点とする直列チェーンの順運動学
+  P_L[0] = Eigen::Vector3d(0, 0, 0);
+  theta[0] = 0.0;
 
-  // --- 左側 (Link2, Link1) は X負 方向 ---
-  Eigen::Vector3d v2(-1.0, 0.0, 0.0); 
-  Eigen::Vector3d P_l2 = 0.5 * L * v2;
-  Eigen::Vector3d P_j1 = L * v2;
-  
-  Eigen::Vector3d v1(-std::cos(q1), -std::sin(q1), 0.0); 
-  Eigen::Vector3d P_l1 = P_j1 + 0.5 * L * v1;
+  for (int i = 1; i < 6; ++i) {
+    theta[i] = theta[i-1] + q[i-1];
+    P_L[i] = P_L[i-1] + Eigen::Vector3d(L * std::cos(theta[i-1]), L * std::sin(theta[i-1]), 0.0);
+  }
 
-  // 機体全体の重心 (4リンクの平均)
-  Eigen::Vector3d CoG = (P_l1 + P_l2 + P_l3 + P_l4) / 4.0;
+  // 対象となる関節（joint_k）の座標は、必ず子リンク（k+1）の原点に一致する
+  Eigen::Vector3d P_joint = P_L[target_joint_index_ + 1];
+  double tau_internal = 0.0;
 
-  // 重心から対象関節へのベクトル r
-  Eigen::Vector3d joint_pos(0.0, 0.0, 0.0);
-  if (target_joint_index_ == 0)      joint_pos = P_j1 - CoG; // joint1
-  else if (target_joint_index_ == 1) joint_pos = P_j2 - CoG; // joint2
-  else if (target_joint_index_ == 2) joint_pos = P_j3 - CoG; // joint3
-  
-  Eigen::MatrixXd W = robot_model_ptr->calcWrenchMatrixOnCoG();
-  if (W.rows() < 6 || W.cols() != thrusts.size()) return 0.0;
+  // 4. 「対象関節より先端側（Distal）」の全プロペラの力を集計する（重心CoGの計算を回避！）
+  // target_joint_index_ == 0 (joint1) の場合、プロペラ1〜5（thrust2〜thrust6）を集計する
+  for (int i = target_joint_index_ + 1; i < 6; ++i) {
+    
+    // 各プロペラのWorld絶対座標
+    Eigen::Vector3d P_rot = P_L[i] + Eigen::Vector3d(dx * std::cos(theta[i]), dx * std::sin(theta[i]), 0.0);
+    Eigen::Vector3d r = P_rot - P_joint; // 関節からプロペラへの「てこ腕」
 
-  Eigen::VectorXd wrench = W * thrusts;
-  Eigen::Vector3d F_total = wrench.head(3);
-  Eigen::Vector3d M_cog = wrench.tail(3);
+    double f = thrusts(i);
+    double psi = gimbal_angles[i];
+    
+    // URDFの定義通り、奇数ローター(0,2,4)はCCW(+1), 偶数(1,3,5)はCW(-1)
+    double dir = (i % 2 == 0) ? 1.0 : -1.0; 
+    double T_yaw = kappa * f * dir;
 
-  // M_joint = M_cog - r x F_total
-  Eigen::Vector3d moment_vec = M_cog - joint_pos.cross(F_total);
-  return moment_vec.dot(Eigen::Vector3d(0.0, 0.0, 1.0));
+    // CasADiが出力した、完璧な局所フレーム推力モデル（ジンバル180度反転を内包）
+    double sin_b = std::sin(beta), cos_b = std::cos(beta);
+    double sin_p = std::sin(psi),  cos_p = std::cos(psi);
+
+    double fx_local = -f * sin_b * cos_p;
+    double fy_local = -f * sin_b * sin_p;
+    double mz_local = T_yaw * cos_b;
+
+    // 力ベクトルをWorld座標系に回転
+    double Fx_world = fx_local * std::cos(theta[i]) - fy_local * std::sin(theta[i]);
+    double Fy_world = fx_local * std::sin(theta[i]) + fy_local * std::cos(theta[i]);
+
+    // Z軸まわりのトルク計算 (r x F_world + M_local)
+    double torque_from_force = r.x() * Fy_world - r.y() * Fx_world;
+    tau_internal += (torque_from_force + mz_local);
+  }
+
+  return tau_internal;
 }
 
 std::vector<double> HydrusXiUnderActuatedNavigator::extractThrustsFromOptVars(
