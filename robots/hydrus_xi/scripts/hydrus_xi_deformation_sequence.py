@@ -100,8 +100,8 @@ class HydrusXiDeformationSequencer:
                 msg.position.append(999.0)  # 位置PID遮断フラグ
                 msg.velocity.append(0.0)
                 dq = self.current_dq['joint1']
-                # 💡 修正：動作方向と反対に 0.01 Nm の微小抵抗（ダンピング）を出力
-                torque_cmd = -math.copysign(0.01, dq) if abs(dq) > 0.005 else 0.0
+                # 💡 修正：動作方向と反対に 0.05 Nm の微小抵抗（ダンピング）を出力
+                torque_cmd = -math.copysign(0.05, dq) if abs(dq) > 0.005 else 0.0
                 msg.effort.append(torque_cmd)
                 
             # === ② Joint 3 の純空力変形中（Step 5）===
@@ -109,8 +109,8 @@ class HydrusXiDeformationSequencer:
                 msg.position.append(999.0)  # 位置PID遮断フラグ
                 msg.velocity.append(0.0)
                 dq = self.current_dq['joint3']
-                # 💡 修正：動作方向と反対に 0.01 Nm の微小抵抗（ダンピング）を出力
-                torque_cmd = -math.copysign(0.01, dq) if abs(dq) > 0.005 else 0.0
+                # 💡 修正：動作方向と反対に 0.05 Nm の微小抵抗（ダンピング）を出力
+                torque_cmd = -math.copysign(0.05, dq) if abs(dq) > 0.005 else 0.0
                 msg.effort.append(torque_cmd)
                 
             # === ③ 予張力生成中、保持関節、および静定待機フェーズ ===
