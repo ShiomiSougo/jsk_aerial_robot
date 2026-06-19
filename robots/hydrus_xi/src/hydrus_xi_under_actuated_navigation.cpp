@@ -441,6 +441,7 @@ void HydrusXiUnderActuatedNavigator::momentCommandCallback(
 }
 
 // ===== ★ 【修正・厳密化】完全な運動学に基づく内部モーメント計算 =====
+// ===== ★ 【修正・厳密化】完全な運動学に基づく内部モーメント計算 =====
 double HydrusXiUnderActuatedNavigator::computeExactInternalMoment(
     const std::vector<double>& gimbal_angles,
     const boost::shared_ptr<HydrusTiltedRobotModel>& robot_model_ptr)
@@ -451,43 +452,61 @@ double HydrusXiUnderActuatedNavigator::computeExactInternalMoment(
 
   double tau_internal = 0.0;
   Eigen::VectorXd thrusts = robot_model_ptr->getStaticThrust();
-  int rotor_num = robot_model_ptr->getRotorNum();
   
-  // URDF物理パラメータ（CasADiのCコード出力から移植）
-  const double beta = 0.34906585; 
-  const double kappa = 0.0182;    
-  const double dx = 0.3016;       
-  const double dz = 0.11058;      
-
-  // ----- 重心位置への集約ロジックを利用したローカルレンチ注入 -----
-  double q2 = 0.0, q3 = 0.0;
+  // ----- 💡 修正：変形に伴う「重心の移動」を正確に計算するロジック -----
+  double q1 = 0.0, q2 = 0.0, q3 = 0.0;
   if (robot_model_ptr->getJointPositions().rows() >= 3) {
-    q2 = robot_model_ptr->getJointPositions()(1);
-    q3 = robot_model_ptr->getJointPositions()(2);
+    q1 = robot_model_ptr->getJointPositions()(0); // joint1
+    q2 = robot_model_ptr->getJointPositions()(1); // joint2
+    q3 = robot_model_ptr->getJointPositions()(2); // joint3
   }
 
-  double L = 0.42;
-  Eigen::Vector3d joint_pos(0.0, 0.0, 0.0);
-  if (target_joint_index_ == 0)      joint_pos = Eigen::Vector3d(-L * std::cos(q2), -L * std::sin(q2), 0.0);
-  else if (target_joint_index_ == 1) joint_pos = Eigen::Vector3d(0.0, 0.0, 0.0);
-  else if (target_joint_index_ == 2) joint_pos = Eigen::Vector3d(L * std::cos(q3), L * std::sin(q3), 0.0);
+  double L = 0.42; // Hydrusの標準的なリンク長[m]
+  
+  // joint2 を一時的な原点 (0,0,0) とし、link3の軸をX軸とする座標系での位置を計算
+  Eigen::Vector3d P_j2(0.0, 0.0, 0.0);
+  
+  // 右側 (link3, link4)
+  Eigen::Vector3d P_j3(L, 0.0, 0.0);
+  Eigen::Vector3d v3(std::cos(q3), std::sin(q3), 0.0); // joint3からlink4への方向
+  Eigen::Vector3d P_l3(0.5 * L, 0.0, 0.0);
+  Eigen::Vector3d P_l4 = P_j3 + 0.5 * L * v3;
 
+  // 左側 (link2, link1)
+  Eigen::Vector3d v2(-std::cos(q2), -std::sin(q2), 0.0); // joint2からlink2への方向
+  Eigen::Vector3d P_j1 = L * v2;
+  Eigen::Vector3d v1(-std::cos(q2 + q1), -std::sin(q2 + q1), 0.0); // joint1からlink1への方向
+  Eigen::Vector3d P_l2 = 0.5 * L * v2;
+  Eigen::Vector3d P_l1 = P_j1 + 0.5 * L * v1;
+
+  // 4つのリンクの質量の平均から「現在の本当の重心位置」を算出
+  Eigen::Vector3d CoG = (P_l1 + P_l2 + P_l3 + P_l4) / 4.0;
+
+  // 重心から各関節への正確なベクトル (M_joint = M_cog - joint_pos x F_total のため)
+  Eigen::Vector3d joint_pos(0.0, 0.0, 0.0);
+  if (target_joint_index_ == 0) {
+    joint_pos = P_j1 - CoG;
+  } else if (target_joint_index_ == 1) {
+    joint_pos = P_j2 - CoG;
+  } else if (target_joint_index_ == 2) {
+    joint_pos = P_j3 - CoG;
+  }
+  // -------------------------------------------------------------
+  
   Eigen::MatrixXd W = robot_model_ptr->calcWrenchMatrixOnCoG();
   if (W.rows() < 6 || W.cols() != thrusts.size()) return 0.0;
 
-  // 1. 各ローターの動的ジンバル角とチルトを考慮したローカルレンチでW行列を再構築する代わりに、
-  // 現行APIの安全性と互換性を維持しつつ、推力成分から重心の総レンチを算出します
+  // CoG周りの総レンチ（力とモーメント）
   Eigen::VectorXd wrench = W * thrusts;
   Eigen::Vector3d F_total = wrench.head(3);
   Eigen::Vector3d M_cog = wrench.tail(3);
 
-  // 2. モーメント移動定理で対象関節のZ軸トルクを抽出
+  // モーメント移動定理で対象関節のZ軸トルクを抽出
   Eigen::Vector3d moment_vec = M_cog - joint_pos.cross(F_total);
   tau_internal = moment_vec.dot(Eigen::Vector3d(0.0, 0.0, 1.0));
 
   return tau_internal;
 }
-
 // 推力抽出（現在は不使用ですが互換性のため保持）
 std::vector<double> HydrusXiUnderActuatedNavigator::extractThrustsFromOptVars(
     const std::vector<double>& x,
