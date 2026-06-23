@@ -149,10 +149,10 @@ class HydrusXiDeformationSequencer:
         angle_diff_to_final = self._get_angle_difference(self.current_q[joint_name], self.target_q[joint_name])
         
         # ゲインを少しだけ高めて、沼の抵抗に対して最初から強めに押し出す
-        P_GAIN = 1.2  
+        P_GAIN = 0.8 
         
         # 💡 他に影響を与えない安全な範囲（0.45 Nm）で、風力の最大出力を引き上げる
-        MAX_DRIVE_TORQUE_BASE = 0.45 
+        MAX_DRIVE_TORQUE_BASE = 0.2
         
         tau_des = P_GAIN * angle_diff_to_final
         remaining_angle = abs(angle_diff_to_final)
