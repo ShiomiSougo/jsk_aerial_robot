@@ -39,8 +39,8 @@ STABILIZE_TIMEOUT = 4.0           # 揺れが収まらなくても次のステ�
 
 # ★追加: 物理的な安定判定・予張力用パラメータ
 STABLE_TORQUE_THRESH = 0.05       # 安定と判定するトルク閾値 [Nm]
-PRELOAD_TORQUE = 0.04             # 構造を突っ張らせるための予張力トルク [Nm]
-JOINT2_HOLD_TORQUE = 0.02         # 予張力フェーズでJoint2の動きを抑え込むためのバイアストルク [Nm]
+PRELOAD_TORQUE = 0.15             # 構造を突っ張らせるための予張力トルク [Nm]
+JOINT2_HOLD_TORQUE = 0.08         # 予張力フェーズでJoint2の動きを抑え込むためのバイアストルク [Nm]
 
 STEP_DURATIONS = {
     SequenceStep.INIT: 2.0,
