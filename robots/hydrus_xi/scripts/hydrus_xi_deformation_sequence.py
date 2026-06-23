@@ -141,7 +141,7 @@ class HydrusXiDeformationSequencer:
         angle_diff_to_final = self._get_angle_difference(self.current_q[joint_name], self.target_q[joint_name])
         
         # 💡 修正：C++が等式制約で正確に応答するため、Pゲインと最大トルクを実際の物理スケールに最適化
-        P_GAIN = 0.5# (元 0.8) 実トルクに直接反映されるためゲインを適正化
+        P_GAIN = 0.1# (元 0.8) 実トルクに直接反映されるためゲインを適正化
         MAX_DRIVE_TORQUE_BASE = 0.3  # (元 0.06) 目標とする最大発生トルク 0.3Nm を上限に設定
         
         # 1. 基礎となる目標モーメント命令値
