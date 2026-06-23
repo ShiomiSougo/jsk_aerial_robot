@@ -362,4 +362,28 @@ class HydrusXiDeformationSequencer:
         self.loop_timer.shutdown()
 
 def main():
-    rospy.init_node('hydrus_xi_deformation_sequencer')
+    rospy.init_node('hydrus_xi_deformation_sequencer', log_level=rospy.INFO)
+    target_q1, target_q2, target_q3 = 0.0, 0.0, 0.0
+    if len(sys.argv) >= 4:
+        target_q1, target_q2, target_q3 = float(sys.argv[1]), float(sys.argv[2]), float(sys.argv[3])
+    
+    sequencer = HydrusXiDeformationSequencer(target_q1, target_q2, target_q3)
+    rate = rospy.Rate(10) 
+    while not rospy.is_shutdown():
+        if sequencer.current_step == SequenceStep.COMPLETE:
+            print("\n" + "="*60)
+            print(" ✨ 【Hydrus-Xi】全シーケンス完走システム")
+            print(" 次の目標関節角度 [q1 q2 q3] を入力してください。")
+            print("="*60)
+            try:
+                user_input = input("💡 ターゲット入力 -> : ")
+                if user_input.strip().lower() == 'q': break
+                angles = [float(x) for x in user_input.split()]
+                if len(angles) == 3: sequencer.update_target_angles(angles[0], angles[1], angles[2])
+            except (ValueError, KeyboardInterrupt): break
+        else:
+            rate.sleep()
+    sequencer.shutdown()
+
+if __name__ == '__main__':
+    main()
