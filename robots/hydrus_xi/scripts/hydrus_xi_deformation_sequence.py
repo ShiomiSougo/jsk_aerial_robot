@@ -94,39 +94,50 @@ class HydrusXiDeformationSequencer:
     def _get_angle_difference(self, current, target):
         return self._normalize_angle(target - current)
 
-    def _send_synchronized_command(self):
+def _send_synchronized_command(self):
         """【排他制御・同期コマンド送信関数】"""
-        msg = JointState()
-        msg.header.stamp = rospy.Time.now()
+        now = rospy.Time.now()
+        
+        # === ① 位置制御用メッセージ（PIDを効かせてカッチリ保持する関節用） ===
+        msg_pos = JointState()
+        msg_pos.header.stamp = now
+        
+        # === ② トルク制御用メッセージ（PIDを完全に切って脱力・フリーにする関節用） ===
+        msg_eff = JointState()
+        msg_eff.header.stamp = now
         
         for joint_name in ['joint1', 'joint2', 'joint3']:
-            msg.name.append(joint_name)
             
-            # === ① Joint 1 の純空力変形中 ===
+            # --- Joint 1 が純空力変形モードの時 ---
             if joint_name == 'joint1' and self.current_step == SequenceStep.JOINT1_DEFORM:
-                # ★修正: 999.0 ではなく「現在の位置」を送り続けることでPIDのエラーを0にし、脱力（フリー）状態を作る
-                msg.position.append(float(self.current_q['joint1']))
-                msg.effort.append(0.0) # トルクはかけず空力に任せる
+                msg_eff.name.append(joint_name)
+                msg_eff.effort.append(0.0)  # 位置配列は空のまま、トルク0だけを送信
                 
-            # === ② Joint 3 の純空力変形中 ===
+            # --- Joint 3 が純空力変形モードの時 ---
             elif joint_name == 'joint3' and self.current_step == SequenceStep.JOINT3_DEFORM:
-                # ★修正: 同様に脱力状態を作る
-                msg.position.append(float(self.current_q['joint3']))
-                msg.effort.append(0.0)
+                msg_eff.name.append(joint_name)
+                msg_eff.effort.append(0.0)  # 同様に完全に脱力させる
                 
-            # === ③ 予張力生成中、保持関節、および静定待機フェーズ ===
+            # --- それ以外の関節（予張力保持、静定待機など） ---
             else:
-                msg.position.append(float(self.joint_targets[joint_name]))
+                msg_pos.name.append(joint_name)
+                msg_pos.position.append(float(self.joint_targets[joint_name]))
                 
                 effort_comp = 0.0
+                # 予張力フェーズ中のみ、Joint 2 が動かないように徐々に保持トルクを加える
                 if joint_name == 'joint2' and self.current_step == SequenceStep.JOINT1_3_PRETENSION:
-                    elapsed = (rospy.Time.now() - self.step_start_time).to_sec()
+                    elapsed = (now - self.step_start_time).to_sec()
                     progress = min(1.0, elapsed / STEP_DURATIONS[SequenceStep.JOINT1_3_PRETENSION])
                     effort_comp = JOINT2_HOLD_TORQUE * progress
                     
-                msg.effort.append(effort_comp)
+                msg_pos.effort.append(effort_comp)
                 
-        self.joints_ctrl_pub.publish(msg)
+        # --- メッセージのパブリッシュ（要素がある場合のみ送信） ---
+        if len(msg_pos.name) > 0:
+            self.joints_ctrl_pub.publish(msg_pos)
+            
+        if len(msg_eff.name) > 0:
+            self.joints_ctrl_pub.publish(msg_eff)
 
     def _send_internal_moment_command(self, joint_idx, tau_des):
         msg = Float64MultiArray()
