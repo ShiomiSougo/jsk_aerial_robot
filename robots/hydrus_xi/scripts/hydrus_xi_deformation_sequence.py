@@ -104,22 +104,20 @@ class HydrusXiDeformationSequencer:
             
             # === ① Joint 1 の純空力変形中 ===
             if joint_name == 'joint1' and self.current_step == SequenceStep.JOINT1_DEFORM:
-                msg.position.append(999.0)  # 位置PID遮断
-                # ★修正: velocity は絶対に append しない（空配列のまま送る）
-                msg.effort.append(0.0)      # ★修正: 変なダンピング抵抗も一旦やめ、純粋な空力だけで回す
+                # ★修正: 999.0 ではなく「現在の位置」を送り続けることでPIDのエラーを0にし、脱力（フリー）状態を作る
+                msg.position.append(float(self.current_q['joint1']))
+                msg.effort.append(0.0) # トルクはかけず空力に任せる
                 
             # === ② Joint 3 の純空力変形中 ===
             elif joint_name == 'joint3' and self.current_step == SequenceStep.JOINT3_DEFORM:
-                msg.position.append(999.0)  # 位置PID遮断
-                # ★修正: velocity は絶対に append しない
+                # ★修正: 同様に脱力状態を作る
+                msg.position.append(float(self.current_q['joint3']))
                 msg.effort.append(0.0)
                 
             # === ③ 予張力生成中、保持関節、および静定待機フェーズ ===
             else:
                 msg.position.append(float(self.joint_targets[joint_name]))
-                # ★修正: ここでも velocity は絶対に append しない
                 
-                # 予張力フェーズ中のみ、Joint 2 が動かないように徐々に保持トルクを加える
                 effort_comp = 0.0
                 if joint_name == 'joint2' and self.current_step == SequenceStep.JOINT1_3_PRETENSION:
                     elapsed = (rospy.Time.now() - self.step_start_time).to_sec()
