@@ -162,8 +162,6 @@ namespace
     HydrusXiUnderActuatedNavigator *planner = reinterpret_cast<HydrusXiUnderActuatedNavigator*>(planner_ptr);
     return planner->getFCTMinThresh() - planner->getRobotModelForPlan()->getFeasibleControlTMin();
   }
-
-  // ★ 削除：不要になった等式制約関数 (targetMomentEqualityConstraint) はここから消しました
 };
 
 HydrusXiUnderActuatedNavigator::HydrusXiUnderActuatedNavigator():
@@ -232,11 +230,6 @@ void HydrusXiUnderActuatedNavigator::initialize(ros::NodeHandle nh, ros::NodeHan
     vectoring_nl_solver_->set_max_objective(maximizeFCTMin, this);
 
   vectoring_nl_solver_->add_inequality_constraint(baselinkRotConstraint, this, 1e-8);
-
-  // ==============================================================
-  // ★ 削除：この行（等式制約の登録）を消し去りました
-  // vectoring_nl_solver_->add_equality_constraint(targetMomentEqualityConstraint, this, 2e-2);
-  // ==============================================================
 
   vectoring_nl_solver_->set_xtol_rel(1e-4);
   vectoring_nl_solver_->set_maxeval(1000);
@@ -413,6 +406,13 @@ void HydrusXiUnderActuatedNavigator::rosParamInit()
   getParam<double>(navi_nh, "fc_t_min_weight", fc_t_min_weight_, 1.0);
   getParam<double>(navi_nh, "baselink_rot_thresh", baselink_rot_thresh_, 0.02);
   getParam<double>(navi_nh, "fc_t_min_thresh", fc_t_min_thresh_, 2.0);
+
+  // ====================================================================
+  // ★ デバッグ用追加：不等式制約の閾値を強制的に大幅緩和（上書き）
+  // ====================================================================
+  baselink_rot_thresh_ = 0.25;  // 約14度までの機体の傾きを許容（元は 0.02）
+  fc_t_min_thresh_ = 0.5;       // 安全マージンの最低要求を下げる（元は 2.0）
+  gimbal_delta_angle_ = 0.5;    // 1ステップでの最大ジンバル可動域を拡大（元は 0.2）
 }
 
 void HydrusXiUnderActuatedNavigator::momentCommandCallback(
