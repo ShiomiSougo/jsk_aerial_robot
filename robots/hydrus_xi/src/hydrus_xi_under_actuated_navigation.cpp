@@ -50,7 +50,7 @@ namespace
         double diff = current_tau - planner->getTauDesTarget();
         
         // ペナルティの重み（要求トルクにどれくらい執着するか。1000〜5000程度が目安）
-        double w_tau = 75.0; 
+        double w_tau = 50.0; 
         
         // NLoptは「最大化」を目指す設定になっているため、誤差の二乗を「引く（マイナスする）」
         objective_base -= w_tau * (diff * diff); 
