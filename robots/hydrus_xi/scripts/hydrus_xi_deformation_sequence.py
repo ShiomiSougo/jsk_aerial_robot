@@ -148,12 +148,12 @@ class HydrusXiDeformationSequencer:
     def _calculate_target_moment(self, joint_name):
         angle_diff_to_final = self._get_angle_difference(self.current_q[joint_name], self.target_q[joint_name])
         
-        P_GAIN = 0.8
-        MAX_DRIVE_TORQUE_BASE = 0.25  # 物理抵抗（ダンピング0.8）を確実に突破するパワー
+        P_GAIN = 1.5
+        MAX_DRIVE_TORQUE_BASE = 1.0  # 物理抵抗（ダンピング0.8）を確実に突破するパワー
         
         tau_des = P_GAIN * angle_diff_to_final
         remaining_angle = abs(angle_diff_to_final)
-        DECEL_ZONE = 0.15
+        DECEL_ZONE = 0.08
         
         if remaining_angle < DECEL_ZONE:
             fade_factor = remaining_angle / DECEL_ZONE
