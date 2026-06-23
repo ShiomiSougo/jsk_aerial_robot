@@ -42,6 +42,20 @@ namespace
                           + planner->getForceVariantWeight() / variant 
                           + planner->getFCTMinWeight() * robot_model->getFeasibleControlTMin();
 
+    // ==============================================================
+    // ★ 追加：ハード制約（等式）の代わりとなるソフト制約（ペナルティ）
+    // ==============================================================
+    if (planner->hasMomentCommand() && planner->getTargetJointIndex() >= 0) {
+        double current_tau = planner->computeExactInternalMoment(x, robot_model);
+        double diff = current_tau - planner->getTauDesTarget();
+        
+        // ペナルティの重み（要求トルクにどれくらい執着するか。1000〜5000程度が目安）
+        double w_tau = 1000.0; 
+        
+        // NLoptは「最大化」を目指す設定になっているため、誤差の二乗を「引く（マイナスする）」
+        objective_base -= w_tau * (diff * diff); 
+    }
+
     return objective_base; 
   }
 
@@ -117,6 +131,16 @@ namespace
                           + planner->getForceVariantWeight() / variant 
                           + planner->getYawTorqueWeight() * planner->getMaxMinYaw();
 
+    // ==============================================================
+    // ★ 追加：ソフト制約（ペナルティ）
+    // ==============================================================
+    if (planner->hasMomentCommand() && planner->getTargetJointIndex() >= 0) {
+        double current_tau = planner->computeExactInternalMoment(x, robot_model);
+        double diff = current_tau - planner->getTauDesTarget();
+        double w_tau = 1000.0;
+        objective_base -= w_tau * (diff * diff); 
+    }
+
     return objective_base; 
   }
 
@@ -139,23 +163,7 @@ namespace
     return planner->getFCTMinThresh() - planner->getRobotModelForPlan()->getFeasibleControlTMin();
   }
 
-  // ===== ★ 等式制約関数（モデル更新付き） =====
-  double targetMomentEqualityConstraint(const std::vector<double> &x, std::vector<double> &grad, void *planner_ptr)
-  {
-    HydrusXiUnderActuatedNavigator *planner = reinterpret_cast<HydrusXiUnderActuatedNavigator*>(planner_ptr);
-    auto robot_model = planner->getRobotModelForPlan();
-    
-    KDL::JntArray joint_positions = planner->getJointPositionsForPlan();
-    for(int i = 0; i < x.size(); i++) {
-        joint_positions(planner->getControlIndices().at(i)) = x.at(i);
-    }
-    robot_model->updateRobotModel(joint_positions);
-
-    if (!planner->hasMomentCommand() || planner->getTargetJointIndex() < 0) return 0.0; 
-
-    double current_tau = planner->computeExactInternalMoment(x, robot_model);
-    return current_tau - planner->getTauDesTarget();
-  }
+  // ★ 削除：不要になった等式制約関数 (targetMomentEqualityConstraint) はここから消しました
 };
 
 HydrusXiUnderActuatedNavigator::HydrusXiUnderActuatedNavigator():
@@ -225,8 +233,10 @@ void HydrusXiUnderActuatedNavigator::initialize(ros::NodeHandle nh, ros::NodeHan
 
   vectoring_nl_solver_->add_inequality_constraint(baselinkRotConstraint, this, 1e-8);
 
-  // 等式制約の登録（緩和閾値 2e-2）
-  vectoring_nl_solver_->add_equality_constraint(targetMomentEqualityConstraint, this, 2e-2);
+  // ==============================================================
+  // ★ 削除：この行（等式制約の登録）を消し去りました
+  // vectoring_nl_solver_->add_equality_constraint(targetMomentEqualityConstraint, this, 2e-2);
+  // ==============================================================
 
   vectoring_nl_solver_->set_xtol_rel(1e-4);
   vectoring_nl_solver_->set_maxeval(1000);
@@ -415,22 +425,18 @@ void HydrusXiUnderActuatedNavigator::momentCommandCallback(
   has_moment_command_ = true;
 }
 
-// ===== ★ 【究極版】URDFとCasADiの数式に完全一致する順運動学計算 =====
 double HydrusXiUnderActuatedNavigator::computeExactInternalMoment(
     const std::vector<double>& gimbal_angles,
     const boost::shared_ptr<HydrusTiltedRobotModel>& robot_model_ptr)
 {
   if (!robot_model_ptr || target_joint_index_ < 0) return 0.0;
 
-  // ローター（リンク）数と関節数を動的に取得
   Eigen::VectorXd thrusts = robot_model_ptr->getStaticThrust();
-  int num_rotors = thrusts.size();       // 4リンクなら4、6リンクなら6
-  int num_joints = num_rotors - 1;       // 4リンクなら3、6リンクなら5
+  int num_rotors = thrusts.size();
+  int num_joints = num_rotors - 1;
 
-  // 指定された関節インデックスが実際の関節数を超えている場合は計算しない
   if (target_joint_index_ >= num_joints) return 0.0;
 
-  // 1. 各関節の角度を動的に取得（std::vectorで必要な分だけ確保）
   std::vector<double> q(num_joints, 0.0);
   try {
     const auto& joint_map = robot_model_ptr->getJointIndexMap();
@@ -442,21 +448,18 @@ double HydrusXiUnderActuatedNavigator::computeExactInternalMoment(
     return 0.0;
   }
 
-  // 2. 物理パラメータ
   const double beta = 0.34906585; 
   const double kappa = 0.0182;    
   const double dx = 0.3016;       
   const double L = 0.6; 
 
-  // 配列もローター数に合わせて動的に確保
   std::vector<Eigen::Vector3d> P_L(num_rotors);
   std::vector<double> theta(num_rotors);
   
-  // 3. link1(Root) を原点とする直列チェーンの順運動学
   P_L[0] = Eigen::Vector3d(0, 0, 0);
   theta[0] = 0.0;
 
-  for (int i = 1; i < num_rotors; ++i) { // <--- ★ ここが 6 ではなく num_rotors になる
+  for (int i = 1; i < num_rotors; ++i) {
     theta[i] = theta[i-1] + q[i-1];
     P_L[i] = P_L[i-1] + Eigen::Vector3d(L * std::cos(theta[i-1]), L * std::sin(theta[i-1]), 0.0);
   }
@@ -464,8 +467,7 @@ double HydrusXiUnderActuatedNavigator::computeExactInternalMoment(
   Eigen::Vector3d P_joint = P_L[target_joint_index_ + 1];
   double tau_internal = 0.0;
 
-  // 4. 「対象関節より先端側（Distal）」の全プロペラの力を集計する
-  for (int i = target_joint_index_ + 1; i < num_rotors; ++i) { // <--- ★ ここも num_rotors になる
+  for (int i = target_joint_index_ + 1; i < num_rotors; ++i) {
     
     Eigen::Vector3d P_rot = P_L[i] + Eigen::Vector3d(dx * std::cos(theta[i]), dx * std::sin(theta[i]), 0.0);
     Eigen::Vector3d r = P_rot - P_joint; 
