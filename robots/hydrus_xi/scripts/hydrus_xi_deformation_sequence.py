@@ -107,6 +107,8 @@ class HydrusXiDeformationSequencer:
                 msg.position.append(float('nan')) 
                 msg.velocity.append(0.0)
                 msg.effort.append(0.0)  # 純空力に任せるためトルク補償は0
+                # 💡 テスト修正：空力に任せるのをやめ、モーター自身に 5.0 Nm（特大）のトルクを直接出させる
+                msg.effort.append(5.0)
                 
             # --- Joint 3 が純空力変形モードの時 ---
             elif joint_name == 'joint3' and self.current_step == SequenceStep.JOINT3_DEFORM:
