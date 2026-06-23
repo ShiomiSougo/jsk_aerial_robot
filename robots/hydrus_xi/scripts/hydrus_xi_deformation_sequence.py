@@ -94,7 +94,7 @@ class HydrusXiDeformationSequencer:
     def _get_angle_difference(self, current, target):
         return self._normalize_angle(target - current)
 
-def _send_synchronized_command(self):
+    def _send_synchronized_command(self):
         """【排他制御・同期コマンド送信関数】"""
         now = rospy.Time.now()
         
@@ -137,12 +137,7 @@ def _send_synchronized_command(self):
             self.joints_ctrl_pub.publish(msg_pos)
             
         if len(msg_eff.name) > 0:
-            self.joints_ctrl_pub.publish(msg_eff)
-
-    def _send_internal_moment_command(self, joint_idx, tau_des):
-        msg = Float64MultiArray()
-        msg.data = [float(joint_idx), float(tau_des)]
-        self.moment_pub.publish(msg)
+            self.joints_
 
     def _calculate_target_moment(self, joint_name):
         """
