@@ -362,4 +362,4 @@ class HydrusXiDeformationSequencer:
         self.loop_timer.shutdown()
 
 def main():
-    rospy.init_node('hydrus_xi_deformation_sequencer
+    rospy.init_node('hydrus_xi_deformation_sequencer')
