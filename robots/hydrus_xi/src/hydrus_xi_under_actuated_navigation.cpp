@@ -420,63 +420,62 @@ double HydrusXiUnderActuatedNavigator::computeExactInternalMoment(
     const std::vector<double>& gimbal_angles,
     const boost::shared_ptr<HydrusTiltedRobotModel>& robot_model_ptr)
 {
-  // target_joint_index_ は 0(joint1) から 4(joint5) まで
-  if (!robot_model_ptr || target_joint_index_ < 0 || target_joint_index_ > 4) return 0.0;
+  if (!robot_model_ptr || target_joint_index_ < 0) return 0.0;
 
+  // ローター（リンク）数と関節数を動的に取得
   Eigen::VectorXd thrusts = robot_model_ptr->getStaticThrust();
-  if (thrusts.size() < 6) return 0.0;
+  int num_rotors = thrusts.size();       // 4リンクなら4、6リンクなら6
+  int num_joints = num_rotors - 1;       // 4リンクなら3、6リンクなら5
 
-  // 1. 各関節の角度を正確に取得
-  double q[5] = {0,0,0,0,0};
+  // 指定された関節インデックスが実際の関節数を超えている場合は計算しない
+  if (target_joint_index_ >= num_joints) return 0.0;
+
+  // 1. 各関節の角度を動的に取得（std::vectorで必要な分だけ確保）
+  std::vector<double> q(num_joints, 0.0);
   try {
     const auto& joint_map = robot_model_ptr->getJointIndexMap();
-    q[0] = robot_model_ptr->getJointPositions()(joint_map.at("joint1"));
-    q[1] = robot_model_ptr->getJointPositions()(joint_map.at("joint2"));
-    q[2] = robot_model_ptr->getJointPositions()(joint_map.at("joint3"));
-    q[3] = robot_model_ptr->getJointPositions()(joint_map.at("joint4"));
-    q[4] = robot_model_ptr->getJointPositions()(joint_map.at("joint5"));
+    for (int i = 0; i < num_joints; ++i) {
+        std::string joint_name = "joint" + std::to_string(i + 1);
+        q[i] = robot_model_ptr->getJointPositions()(joint_map.at(joint_name));
+    }
   } catch (const std::exception& e) {
     return 0.0;
   }
 
-  // 2. URDFとCasADiから判明した真の物理パラメータ
+  // 2. 物理パラメータ
   const double beta = 0.34906585; 
   const double kappa = 0.0182;    
   const double dx = 0.3016;       
-  const double L = 0.6; // URDFに基づく正確なリンク長
+  const double L = 0.6; 
 
-  Eigen::Vector3d P_L[6]; // 各リンクの原点（World座標）
-  double theta[6];        // 各リンクの絶対角度
+  // 配列もローター数に合わせて動的に確保
+  std::vector<Eigen::Vector3d> P_L(num_rotors);
+  std::vector<double> theta(num_rotors);
   
   // 3. link1(Root) を原点とする直列チェーンの順運動学
   P_L[0] = Eigen::Vector3d(0, 0, 0);
   theta[0] = 0.0;
 
-  for (int i = 1; i < 6; ++i) {
+  for (int i = 1; i < num_rotors; ++i) { // <--- ★ ここが 6 ではなく num_rotors になる
     theta[i] = theta[i-1] + q[i-1];
     P_L[i] = P_L[i-1] + Eigen::Vector3d(L * std::cos(theta[i-1]), L * std::sin(theta[i-1]), 0.0);
   }
 
-  // 対象となる関節（joint_k）の座標は、必ず子リンク（k+1）の原点に一致する
   Eigen::Vector3d P_joint = P_L[target_joint_index_ + 1];
   double tau_internal = 0.0;
 
-  // 4. 「対象関節より先端側（Distal）」の全プロペラの力を集計する（重心CoGの計算を回避！）
-  // target_joint_index_ == 0 (joint1) の場合、プロペラ1〜5（thrust2〜thrust6）を集計する
-  for (int i = target_joint_index_ + 1; i < 6; ++i) {
+  // 4. 「対象関節より先端側（Distal）」の全プロペラの力を集計する
+  for (int i = target_joint_index_ + 1; i < num_rotors; ++i) { // <--- ★ ここも num_rotors になる
     
-    // 各プロペラのWorld絶対座標
     Eigen::Vector3d P_rot = P_L[i] + Eigen::Vector3d(dx * std::cos(theta[i]), dx * std::sin(theta[i]), 0.0);
-    Eigen::Vector3d r = P_rot - P_joint; // 関節からプロペラへの「てこ腕」
+    Eigen::Vector3d r = P_rot - P_joint; 
 
     double f = thrusts(i);
     double psi = gimbal_angles[i];
     
-    // URDFの定義通り、奇数ローター(0,2,4)はCCW(+1), 偶数(1,3,5)はCW(-1)
     double dir = (i % 2 == 0) ? 1.0 : -1.0; 
     double T_yaw = kappa * f * dir;
 
-    // CasADiが出力した、完璧な局所フレーム推力モデル（ジンバル180度反転を内包）
     double sin_b = std::sin(beta), cos_b = std::cos(beta);
     double sin_p = std::sin(psi),  cos_p = std::cos(psi);
 
@@ -484,18 +483,15 @@ double HydrusXiUnderActuatedNavigator::computeExactInternalMoment(
     double fy_local = -f * sin_b * sin_p;
     double mz_local = T_yaw * cos_b;
 
-    // 力ベクトルをWorld座標系に回転
     double Fx_world = fx_local * std::cos(theta[i]) - fy_local * std::sin(theta[i]);
     double Fy_world = fx_local * std::sin(theta[i]) + fy_local * std::cos(theta[i]);
 
-    // Z軸まわりのトルク計算 (r x F_world + M_local)
     double torque_from_force = r.x() * Fy_world - r.y() * Fx_world;
     tau_internal += (torque_from_force + mz_local);
   }
 
   return tau_internal;
 }
-
 std::vector<double> HydrusXiUnderActuatedNavigator::extractThrustsFromOptVars(
     const std::vector<double>& x,
     const boost::shared_ptr<HydrusTiltedRobotModel>& robot_model_ptr)
