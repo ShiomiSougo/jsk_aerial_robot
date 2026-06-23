@@ -102,33 +102,29 @@ class HydrusXiDeformationSequencer:
         for joint_name in ['joint1', 'joint2', 'joint3']:
             msg.name.append(joint_name)
             
-            # === ① Joint 1 の純空力変形中（Step 2）===
+            # === ① Joint 1 の純空力変形中 ===
             if joint_name == 'joint1' and self.current_step == SequenceStep.JOINT1_DEFORM:
-                msg.position.append(999.0)  # 位置PID遮断フラグ
-                msg.velocity.append(0.0)
-                dq = self.current_dq['joint1']
-                # 💡 修正：動作方向と反対に 0.05 Nm の微小抵抗（ダンピング）を出力
-                torque_cmd = -math.copysign(0.05, dq) if abs(dq) > 0.005 else 0.0
-                msg.effort.append(torque_cmd)
+                msg.position.append(999.0)  # 位置PID遮断
+                # ★修正: velocity は絶対に append しない（空配列のまま送る）
+                msg.effort.append(0.0)      # ★修正: 変なダンピング抵抗も一旦やめ、純粋な空力だけで回す
                 
-            # === ② Joint 3 の純空力変形中（Step 4）===
+            # === ② Joint 3 の純空力変形中 ===
             elif joint_name == 'joint3' and self.current_step == SequenceStep.JOINT3_DEFORM:
-                msg.position.append(999.0)  # 位置PID遮断フラグ
-                msg.velocity.append(0.0)
-                dq = self.current_dq['joint3']
-                # 💡 修正：動作方向と反対に 0.05 Nm の微小抵抗（ダンピング）を出力
-                torque_cmd = -math.copysign(0.05, dq) if abs(dq) > 0.005 else 0.0
-                msg.effort.append(torque_cmd)
+                msg.position.append(999.0)  # 位置PID遮断
+                # ★修正: velocity は絶対に append しない
+                msg.effort.append(0.0)
                 
             # === ③ 予張力生成中、保持関節、および静定待機フェーズ ===
             else:
                 msg.position.append(float(self.joint_targets[joint_name]))
-                msg.velocity.append(0.0)
+                # ★修正: ここでも velocity は絶対に append しない
                 
-                # 💡 追加：予張力フェーズ中のみ、Joint 2 が動かないように微小な保持トルクを加える
+                # 予張力フェーズ中のみ、Joint 2 が動かないように徐々に保持トルクを加える
                 effort_comp = 0.0
                 if joint_name == 'joint2' and self.current_step == SequenceStep.JOINT1_3_PRETENSION:
-                    effort_comp = JOINT2_HOLD_TORQUE
+                    elapsed = (rospy.Time.now() - self.step_start_time).to_sec()
+                    progress = min(1.0, elapsed / STEP_DURATIONS[SequenceStep.JOINT1_3_PRETENSION])
+                    effort_comp = JOINT2_HOLD_TORQUE * progress
                     
                 msg.effort.append(effort_comp)
                 
