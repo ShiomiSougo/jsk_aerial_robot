@@ -95,14 +95,10 @@ class HydrusXiDeformationSequencer:
         return self._normalize_angle(target - current)
 
     def _send_synchronized_command(self):
-        """【排他制御・同期コマンド送信関数（位置とトルクの分離版）】"""
+        """【排他制御・同期コマンド送信関数（位置とトルクの完全分離版）】"""
         now = rospy.Time.now()
-        
-        # === ① 位置制御用メッセージ（PIDを効かせてカッチリ保持する関節用） ===
         msg_pos = JointState()
         msg_pos.header.stamp = now
-        
-        # === ② トルク制御用メッセージ（PIDを完全に切って脱力・フリーにする関節用） ===
         msg_eff = JointState()
         msg_eff.header.stamp = now
         
@@ -111,45 +107,24 @@ class HydrusXiDeformationSequencer:
             # --- Joint 1 が純空力変形モードの時 ---
             if joint_name == 'joint1' and self.current_step == SequenceStep.JOINT1_DEFORM:
                 msg_eff.name.append(joint_name)
-                msg_eff.effort.append(0.0)  # 位置配列は空のまま、トルク0だけを送信
+                msg_eff.effort.append(0.0)  # 脱力
                 
             # --- Joint 3 が純空力変形モードの時 ---
             elif joint_name == 'joint3' and self.current_step == SequenceStep.JOINT3_DEFORM:
                 msg_eff.name.append(joint_name)
-                msg_eff.effort.append(0.0)  # 同様に完全に脱力させる
+                msg_eff.effort.append(0.0)  # 脱力
                 
-            # --- それ以外の関節（予張力保持、静定待機など） ---
+            # --- それ以外の関節（位置制御でカッチリ保持） ---
             else:
                 msg_pos.name.append(joint_name)
                 msg_pos.position.append(float(self.joint_targets[joint_name]))
+                msg_pos.effort.append(0.0) # ★修正: 変な保持トルクの上乗せをやめ、純粋にPIDの保持力に任せる
                 
-                effort_comp = 0.0
-                
-                # 💡 修正：Joint 2 の保持トルクを「予張力でランプアップ」し、「変形中もずっと維持」する
-                if joint_name == 'joint2':
-                    if self.current_step == SequenceStep.JOINT1_3_PRETENSION:
-                        # Step 1: 0.0 -> 最大値へランプアップ
-                        elapsed = (now - self.step_start_time).to_sec()
-                        progress = min(1.0, elapsed / STEP_DURATIONS[SequenceStep.JOINT1_3_PRETENSION])
-                        effort_comp = JOINT2_HOLD_TORQUE * progress
-                        
-                    elif self.current_step in [SequenceStep.JOINT1_DEFORM, 
-                                               SequenceStep.JOINT1_STABILIZE,
-                                               SequenceStep.JOINT3_DEFORM, 
-                                               SequenceStep.JOINT3_STABILIZE]:
-                        # Step 2〜5: 変形・静定フェーズ中はずっと最大保持トルクで固め続ける
-                        effort_comp = JOINT2_HOLD_TORQUE
-                        
-                msg_pos.effort.append(effort_comp)
-                
-        # --- メッセージのパブリッシュ（要素がある場合のみ送信） ---
         if len(msg_pos.name) > 0:
             self.joints_ctrl_pub.publish(msg_pos)
-            
         if len(msg_eff.name) > 0:
             self.joints_ctrl_pub.publish(msg_eff)
-
-
+            
     def _send_internal_moment_command(self, joint_idx, tau_des):
         msg = Float64MultiArray()
         msg.data = [float(joint_idx), float(tau_des)]
@@ -200,17 +175,16 @@ class HydrusXiDeformationSequencer:
         self.joint_targets['joint3'] = self.current_q['joint3']
         self._send_synchronized_command()
         self._send_internal_moment_command(0, 0.0)
-        self._send_internal_moment_command(2, 0.0)
         
         if (rospy.Time.now() - self.step_start_time).to_sec() >= STEP_DURATIONS[SequenceStep.INIT]:
-            rospy.loginfo("[HydrusXiSequencer] Step 0 Completed -> Step 1 (Joint 1 & 3 Pretension)")
-            self.current_step = SequenceStep.JOINT1_3_PRETENSION
+            rospy.loginfo("[HydrusXiSequencer] Step 0 Completed -> Step 1 (Joint 1 Pretension)")
+            self.current_step = SequenceStep.JOINT1_3_PRETENSION  # Enum名はそのまま利用
             self.step_start_time = rospy.Time.now()
 
     def _step_joints_pretension(self):
+        """★ 修正: C++の仕様に合わせ、ターゲット(Joint 1)のみに予張力をかける"""
         self.joint_targets['joint1'] = self.current_q['joint1']
         self.joint_targets['joint3'] = self.current_q['joint3']
-        
         self._send_synchronized_command()
         
         elapsed = (rospy.Time.now() - self.step_start_time).to_sec()
@@ -219,11 +193,11 @@ class HydrusXiDeformationSequencer:
         
         current_preload = PRELOAD_TORQUE * progress
         
+        # ★修正: Joint 3への送信を削除し、Joint 1のみに集中させる（上書き防止）
         self._send_internal_moment_command(0, current_preload)
-        self._send_internal_moment_command(2, -current_preload)
         
         if elapsed >= duration:
-            rospy.loginfo("[HydrusXiSequencer] Step 1 Completed: 構造のプリロード完了 -> Step 2 (Joint 1 Deform)")
+            rospy.loginfo("[HydrusXiSequencer] Step 1 Completed: Joint 1 のプリロード完了 -> Step 2 (Joint 1 Deform)")
             self.current_step = SequenceStep.JOINT1_DEFORM
             self.step_start_time = rospy.Time.now()
 
