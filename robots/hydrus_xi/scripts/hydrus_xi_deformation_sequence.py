@@ -4,6 +4,7 @@
 """
 Hydrus-Xi 連続変形シーケンス実行スクリプト（CasADi等式制約対応・完全版）
 ゴール直前ソフトランディング減速＆静定ウェイト版
+物理適応型安全装置付き：機体の物理状態（トルク）を監視し、安定している時のみ変形を進める
 
 使用例:
   python hydrus_xi_deformation_sequence.py 0.0 -1.0 0.0
@@ -37,6 +38,9 @@ STABILIZE_VELOCITY_THRESH = 0.01  # 静定したとみなす角速度の閾値 [
 STABILIZE_REQUIRED_LOOPS = 10     # 閾値を連続で下回るべきループ数 (10ループ = 約0.5秒)
 STABILIZE_TIMEOUT = 4.0           # 揺れが収まらなくても次のステップへ進む最大制限時間 [s]
 
+# ★追加: 物理的な安定判定用閾値
+STABLE_TORQUE_THRESH = 0.05       # 安定と判定するトルク閾値 [Nm]
+
 STEP_DURATIONS = {
     SequenceStep.INIT: 2.0,
     SequenceStep.JOINT1_PRETENSION: 2.0,
@@ -51,6 +55,7 @@ class HydrusXiDeformationSequencer:
         self.target_q = {'joint1': target_q1, 'joint2': target_q2, 'joint3': target_q3}
         self.current_q = {'joint1': 0.0, 'joint2': 0.0, 'joint3': 0.0}
         self.current_dq = {'joint1': 0.0, 'joint2': 0.0, 'joint3': 0.0}
+        self.current_effort = {'joint1': 0.0, 'joint2': 0.0, 'joint3': 0.0}
         self.joint_targets = {'joint1': 0.0, 'joint2': 0.0, 'joint3': 0.0}
         
         self.current_step = SequenceStep.INIT
@@ -61,7 +66,7 @@ class HydrusXiDeformationSequencer:
         self.moment_pub = rospy.Publisher('/hydrus_xi/target_internal_moment', Float64MultiArray, queue_size=1)
         self.joint_state_sub = rospy.Subscriber('/hydrus_xi/joint_states', JointState, self._joint_state_callback)
         
-        rospy.loginfo("[HydrusXiSequencer] Initialized: q1=%.3f, q2=%.3f, q3=%.3f", target_q1, target_q2, target_q3)
+        rospy.loginfo("[HydrusXiSequencer] Initialized: q1=%.3f, q2=%.3f, q3=%.3f (Safety Mode Enabled)", target_q1, target_q2, target_q3)
         self.loop_timer = rospy.Timer(rospy.Duration(DT), self._control_loop)
 
     def update_target_angles(self, q1, q2, q3):
@@ -78,6 +83,8 @@ class HydrusXiDeformationSequencer:
             if name in self.current_q:
                 self.current_q[name] = msg.position[i]
                 self.current_dq[name] = msg.velocity[i]
+                if i < len(msg.effort):
+                    self.current_effort[name] = msg.effort[i]
 
     def _normalize_angle(self, angle):
         while angle > math.pi: angle -= 2 * math.pi
@@ -160,6 +167,19 @@ class HydrusXiDeformationSequencer:
             
         return tau_des
 
+    # ================= 安全装置付き目標更新関数 =================
+    def _update_target_smoothly(self, joint_name):
+        """
+        💡 物理適応の肝: トルクが安定している時だけ目標を更新
+        これにより発散を防止し、安定した変形を実現する
+        """
+        if abs(self.current_effort[joint_name]) < STABLE_TORQUE_THRESH:
+            angle_diff = self._get_angle_difference(self.joint_targets[joint_name], self.target_q[joint_name])
+            if abs(angle_diff) > JOINT_RAMP_RATE_BASE:
+                self.joint_targets[joint_name] += math.copysign(JOINT_RAMP_RATE_BASE, angle_diff)
+            else:
+                self.joint_targets[joint_name] = self.target_q[joint_name]
+
     # ======================== 各ステップの実行関数 ========================
 
     def _step_init(self):
@@ -189,11 +209,8 @@ class HydrusXiDeformationSequencer:
             self.step_start_time = rospy.Time.now()
 
     def _step_joint1_deform(self):
-        angle_diff = self._get_angle_difference(self.joint_targets['joint1'], self.target_q['joint1'])
-        if abs(angle_diff) > JOINT_RAMP_RATE_BASE:
-            self.joint_targets['joint1'] += math.copysign(JOINT_RAMP_RATE_BASE, angle_diff)
-        else:
-            self.joint_targets['joint1'] = self.target_q['joint1']
+        # ★ 物理適応型安全装置: トルク安定時のみ目標更新
+        self._update_target_smoothly('joint1')
             
         self._send_synchronized_command()
         tau_des = self._calculate_target_moment('joint1')
@@ -247,11 +264,8 @@ class HydrusXiDeformationSequencer:
         """Step 5: Joint 3 の純空力変形"""
         self.joint_targets['joint1'] = self.target_q['joint1']
 
-        angle_diff = self._get_angle_difference(self.joint_targets['joint3'], self.target_q['joint3'])
-        if abs(angle_diff) > JOINT_RAMP_RATE_BASE:
-            self.joint_targets['joint3'] += math.copysign(JOINT_RAMP_RATE_BASE, angle_diff)
-        else:
-            self.joint_targets['joint3'] = self.target_q['joint3']
+        # ★ 物理適応型安全装置: トルク安定時のみ目標更新
+        self._update_target_smoothly('joint3')
             
         self._send_synchronized_command()
         tau_des = self._calculate_target_moment('joint3')
