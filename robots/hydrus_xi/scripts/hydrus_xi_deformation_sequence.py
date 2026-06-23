@@ -124,12 +124,22 @@ class HydrusXiDeformationSequencer:
                 msg_pos.position.append(float(self.joint_targets[joint_name]))
                 
                 effort_comp = 0.0
-                # 予張力フェーズ中のみ、Joint 2 が動かないように徐々に保持トルクを加える
-                if joint_name == 'joint2' and self.current_step == SequenceStep.JOINT1_3_PRETENSION:
-                    elapsed = (now - self.step_start_time).to_sec()
-                    progress = min(1.0, elapsed / STEP_DURATIONS[SequenceStep.JOINT1_3_PRETENSION])
-                    effort_comp = JOINT2_HOLD_TORQUE * progress
-                    
+                
+                # 💡 修正：Joint 2 の保持トルクを「予張力でランプアップ」し、「変形中もずっと維持」する
+                if joint_name == 'joint2':
+                    if self.current_step == SequenceStep.JOINT1_3_PRETENSION:
+                        # Step 1: 0.0 -> 最大値へランプアップ
+                        elapsed = (now - self.step_start_time).to_sec()
+                        progress = min(1.0, elapsed / STEP_DURATIONS[SequenceStep.JOINT1_3_PRETENSION])
+                        effort_comp = JOINT2_HOLD_TORQUE * progress
+                        
+                    elif self.current_step in [SequenceStep.JOINT1_DEFORM, 
+                                               SequenceStep.JOINT1_STABILIZE,
+                                               SequenceStep.JOINT3_DEFORM, 
+                                               SequenceStep.JOINT3_STABILIZE]:
+                        # Step 2〜5: 変形・静定フェーズ中はずっと最大保持トルクで固め続ける
+                        effort_comp = JOINT2_HOLD_TORQUE
+                        
                 msg_pos.effort.append(effort_comp)
                 
         # --- メッセージのパブリッシュ（要素がある場合のみ送信） ---
@@ -138,6 +148,7 @@ class HydrusXiDeformationSequencer:
             
         if len(msg_eff.name) > 0:
             self.joints_ctrl_pub.publish(msg_eff)
+
 
     def _send_internal_moment_command(self, joint_idx, tau_des):
         msg = Float64MultiArray()
