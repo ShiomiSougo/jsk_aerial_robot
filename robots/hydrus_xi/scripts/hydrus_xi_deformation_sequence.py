@@ -7,7 +7,7 @@ Hydrus-Xi 連続変形シーケンス実行スクリプト（CasADi等式制約�
 物理適応型安全装置付き：機体の物理状態（トルク）を監視し、安定している時のみ変形を進める
 
 使用例:
-  python hydrus_xi_deformation_sequence.py 0.0 -1.0 0.0
+  python hydrus_xi_deformation_sequence.py 0.8 -0.5 0.8
 """
 
 import rospy
@@ -20,10 +20,10 @@ from enum import Enum
 
 class SequenceStep(Enum):
     INIT = 0                      # 初期ホバリング
-    JOINT1_3_PRETENSION = 1       # ★統合追加: Joint 1 & 3 の同時予張力生成（機体構造の遊び除去と安定化）
+    JOINT1_3_PRETENSION = 1       # Joint 1 & 3 の同時予張力生成（機体構造の遊び除去と安定化）
     JOINT1_DEFORM = 2             # Joint 1 の純空力変形
     JOINT1_STABILIZE = 3          # Joint 1 変形後の機体揺れ収束待ち（待機フェーズ）
-    JOINT3_DEFORM = 4             # Joint 3 の純空力変形 (順序繰り上げ)
+    JOINT3_DEFORM = 4             # Joint 3 の純空力変形
     JOINT3_STABILIZE = 5          # Joint 3 変形後の機体揺れ収束待ち（待機フェーズ）
     JOINT2_SERVO = 6              # Joint 2 のサーボ変形（安全特異点スロープ徐変制御）
     COMPLETE = 7                  # 完了
@@ -37,7 +37,7 @@ STABILIZE_VELOCITY_THRESH = 0.01  # 静定したとみなす角速度の閾値 [
 STABILIZE_REQUIRED_LOOPS = 10     # 閾値を連続で下回るべきループ数 (10ループ = 約0.5秒)
 STABILIZE_TIMEOUT = 4.0           # 揺れが収まらなくても次のステップへ進む最大制限時間 [s]
 
-# ★追加: 物理的な安定判定・予張力用パラメータ
+# 物理的な安定判定・予張力用パラメータ
 STABLE_TORQUE_THRESH = 0.05       # 安定と判定するトルク閾値 [Nm]
 PRELOAD_TORQUE = 0.15             # 構造を突っ張らせるための予張力トルク [Nm]
 JOINT2_HOLD_TORQUE = 0.08         # 予張力フェーズでJoint2の動きを抑え込むためのバイアストルク [Nm]
@@ -95,7 +95,7 @@ class HydrusXiDeformationSequencer:
         return self._normalize_angle(target - current)
 
     def _send_synchronized_command(self):
-        """【排他制御・同期コマンド送信関数】"""
+        """【排他制御・同期コマンド送信関数（位置とトルクの分離版）】"""
         now = rospy.Time.now()
         
         # === ① 位置制御用メッセージ（PIDを効かせてカッチリ保持する関節用） ===
@@ -137,7 +137,12 @@ class HydrusXiDeformationSequencer:
             self.joints_ctrl_pub.publish(msg_pos)
             
         if len(msg_eff.name) > 0:
-            self.joints_
+            self.joints_ctrl_pub.publish(msg_eff)
+
+    def _send_internal_moment_command(self, joint_idx, tau_des):
+        msg = Float64MultiArray()
+        msg.data = [float(joint_idx), float(tau_des)]
+        self.moment_pub.publish(msg)
 
     def _calculate_target_moment(self, joint_name):
         """
@@ -146,26 +151,20 @@ class HydrusXiDeformationSequencer:
         """
         angle_diff_to_final = self._get_angle_difference(self.current_q[joint_name], self.target_q[joint_name])
         
-        # 💡 修正：C++が等式制約で正確に応答するため、Pゲインと最大トルクを実際の物理スケールに最適化
-        P_GAIN = 0.8# (元 0.8) 実トルクに直接反映されるためゲインを適正化
-        MAX_DRIVE_TORQUE_BASE = 0.5  # (元 0.06) 目標とする最大発生トルク 0.3Nm を上限に設定
+        P_GAIN = 0.8
+        MAX_DRIVE_TORQUE_BASE = 0.5
         
-        # 1. 基礎となる目標モーメント命令値
         tau_des = P_GAIN * angle_diff_to_final
         
-        # 2. 💡 ゴール手前での減速制御（フェードアウト処理）
         remaining_angle = abs(angle_diff_to_final)
-        DECEL_ZONE = 0.15  # 減速を開始するゴール手前の残差エリア [rad] (約8.5度)
+        DECEL_ZONE = 0.15  # 減速を開始するゴール手前の残差エリア [rad]
         
         if remaining_angle < DECEL_ZONE:
-            # ゴールに近づくほど 1.0 ➔ 0.0 へと滑らかに絞り込まれる減速係数
             fade_factor = remaining_angle / DECEL_ZONE
             dynamic_max_torque = MAX_DRIVE_TORQUE_BASE * fade_factor
-            rospy.logdebug(f"[{joint_name}] ゴール接近・減速中: 出力上限を {fade_factor*100:.1f}% に抑制")
         else:
             dynamic_max_torque = MAX_DRIVE_TORQUE_BASE
             
-        # 3. 動的に計算された上限値でクリッピング（飽和処理）
         if tau_des > dynamic_max_torque:
             tau_des = dynamic_max_torque
         elif tau_des < -dynamic_max_torque:
@@ -175,10 +174,6 @@ class HydrusXiDeformationSequencer:
 
     # ================= 安全装置付き目標更新関数 =================
     def _update_target_smoothly(self, joint_name):
-        """
-        💡 物理適応の肝: トルクが安定している時だけ目標を更新
-        これにより発散を防止し、安定した変形を実現する
-        """
         if abs(self.current_effort[joint_name]) < STABLE_TORQUE_THRESH:
             angle_diff = self._get_angle_difference(self.joint_targets[joint_name], self.target_q[joint_name])
             if abs(angle_diff) > JOINT_RAMP_RATE_BASE:
@@ -202,25 +197,27 @@ class HydrusXiDeformationSequencer:
             self.step_start_time = rospy.Time.now()
 
     def _step_joints_pretension(self):
-        """★ 新規統合: Joint 1と3の両端から同時に予張力をかけ、構造全体の遊びを除去する"""
         self.joint_targets['joint1'] = self.current_q['joint1']
         self.joint_targets['joint3'] = self.current_q['joint3']
         
         self._send_synchronized_command()
         
-        # Joint 1 と 3 に対して逆向きのトルクをかけ、機体を突っ張らせる
-        self._send_internal_moment_command(0, PRELOAD_TORQUE)
-        self._send_internal_moment_command(2, -PRELOAD_TORQUE)
+        elapsed = (rospy.Time.now() - self.step_start_time).to_sec()
+        duration = STEP_DURATIONS[SequenceStep.JOINT1_3_PRETENSION]
+        progress = min(1.0, elapsed / duration)
         
-        if (rospy.Time.now() - self.step_start_time).to_sec() >= STEP_DURATIONS[SequenceStep.JOINT1_3_PRETENSION]:
+        current_preload = PRELOAD_TORQUE * progress
+        
+        self._send_internal_moment_command(0, current_preload)
+        self._send_internal_moment_command(2, -current_preload)
+        
+        if elapsed >= duration:
             rospy.loginfo("[HydrusXiSequencer] Step 1 Completed: 構造のプリロード完了 -> Step 2 (Joint 1 Deform)")
             self.current_step = SequenceStep.JOINT1_DEFORM
             self.step_start_time = rospy.Time.now()
 
     def _step_joint1_deform(self):
-        # ★ 物理適応型安全装置: トルク安定時のみ目標更新
         self._update_target_smoothly('joint1')
-            
         self._send_synchronized_command()
         tau_des = self._calculate_target_moment('joint1')
         self._send_internal_moment_command(0, tau_des)
@@ -233,7 +230,6 @@ class HydrusXiDeformationSequencer:
             self.step_start_time = rospy.Time.now()
 
     def _step_joint1_stabilize(self):
-        """Joint 1 変形後の揺れを収束させる待機ルーチン"""
         self.joint_targets['joint1'] = self.current_q['joint1']
         self.joint_targets['joint3'] = self.current_q['joint3']
         self._send_synchronized_command()
@@ -256,12 +252,8 @@ class HydrusXiDeformationSequencer:
             self.step_start_time = rospy.Time.now()
 
     def _step_joint3_deform(self):
-        """Step 4: Joint 3 の純空力変形"""
         self.joint_targets['joint1'] = self.target_q['joint1']
-
-        # ★ 物理適応型安全装置: トルク安定時のみ目標更新
         self._update_target_smoothly('joint3')
-            
         self._send_synchronized_command()
         tau_des = self._calculate_target_moment('joint3')
         self._send_internal_moment_command(2, tau_des)
@@ -274,7 +266,6 @@ class HydrusXiDeformationSequencer:
             self.step_start_time = rospy.Time.now()
 
     def _step_joint3_stabilize(self):
-        """Joint 3 変形後の揺れを収束させる待機ルーチン"""
         self.joint_targets['joint1'] = self.current_q['joint1']
         self.joint_targets['joint3'] = self.current_q['joint3']
         self._send_synchronized_command()
@@ -297,7 +288,6 @@ class HydrusXiDeformationSequencer:
             self.step_start_time = rospy.Time.now()
 
     def _step_joint2_servo(self):
-        """Step 6: Joint 2 のサーボ変形"""
         self.joint_targets['joint1'] = self.target_q['joint1']
         self.joint_targets['joint3'] = self.target_q['joint3']
 
