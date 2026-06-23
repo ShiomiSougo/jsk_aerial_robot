@@ -148,12 +148,18 @@ class HydrusXiDeformationSequencer:
     def _calculate_target_moment(self, joint_name):
         angle_diff_to_final = self._get_angle_difference(self.current_q[joint_name], self.target_q[joint_name])
         
-        P_GAIN = 1.5
-        MAX_DRIVE_TORQUE_BASE = 1.0  # 物理抵抗（ダンピング0.8）を確実に突破するパワー
+        # ゲインを少しだけ高めて、沼の抵抗に対して最初から強めに押し出す
+        P_GAIN = 1.2  
+        
+        # 💡 他に影響を与えない安全な範囲（0.45 Nm）で、風力の最大出力を引き上げる
+        MAX_DRIVE_TORQUE_BASE = 0.45 
         
         tau_des = P_GAIN * angle_diff_to_final
         remaining_angle = abs(angle_diff_to_final)
-        DECEL_ZONE = 0.08
+        
+        # 💡 【重要】減速ゾーンを極限まで狭く（0.03 rad）します。
+        # これにより、目標の直前までプロペラが強い風を維持し、沼の抵抗に負けて途中で止まるのを防ぎます。
+        DECEL_ZONE = 0.03 
         
         if remaining_angle < DECEL_ZONE:
             fade_factor = remaining_angle / DECEL_ZONE
@@ -167,7 +173,7 @@ class HydrusXiDeformationSequencer:
             tau_des = -dynamic_max_torque
             
         return tau_des
-
+    
     # ======================== 各ステップの実行関数 ========================
 
     def _step_init(self):
