@@ -38,7 +38,7 @@ STABILIZE_REQUIRED_LOOPS = 10     # 収束ループ数
 STABILIZE_TIMEOUT = 4.0           # タイムアウト時間 [s]
 
 # 物理的な予張力パラメータ
-PRELOAD_TORQUE = 0.02             # 💡 サラサラ関節に合わせてプリロードも優しく [Nm]
+PRELOAD_TORQUE = 0.10             # 💡 サラサラ関節に合わせてプリロードも優しく [Nm]
 
 # 🎯 特定された正確なコントローラ名マッピング
 JOINT_CONTROLLERS = {
