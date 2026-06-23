@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 
 """
-Hydrus-Xi 連続変形シーケンス実行スクリプト（ROS Control動的スイッチ・完全脱力版）
+Hydrus-Xi 連続変形シーケンス実行スクリプト（サラサラURDF・安全ソフトランディング版）
 変形中のみ該当関節のPositionControllerを強制停止させ、完全な自由関節を作り出す。
 
 使用例:
@@ -38,7 +38,7 @@ STABILIZE_REQUIRED_LOOPS = 10     # 収束ループ数
 STABILIZE_TIMEOUT = 4.0           # タイムアウト時間 [s]
 
 # 物理的な予張力パラメータ
-PRELOAD_TORQUE = 0.15             # 予張力トルク [Nm]
+PRELOAD_TORQUE = 0.02             # 💡 サラサラ関節に合わせてプリロードも優しく [Nm]
 
 # 🎯 特定された正確なコントローラ名マッピング
 JOINT_CONTROLLERS = {
@@ -89,7 +89,10 @@ class HydrusXiDeformationSequencer:
             elif action == 'stop':
                 req.start_controllers = []
                 req.stop_controllers = [controller_name]
-            req.strictness = 2  # STRICTモード
+                
+            # 💡 修正：2 (STRICT) から 1 (BEST_EFFORT) に変更
+            # これにより、すでにコントローラが停止していてもエラーにせずスルーしてくれるため、二重停止エラーを防げます
+            req.strictness = 1  
             
             res = self.switch_ctrl_client(req)
             if res.ok:
@@ -148,18 +151,18 @@ class HydrusXiDeformationSequencer:
     def _calculate_target_moment(self, joint_name):
         angle_diff_to_final = self._get_angle_difference(self.current_q[joint_name], self.target_q[joint_name])
         
-        # ゲインを少しだけ高めて、沼の抵抗に対して最初から強めに押し出す
-        P_GAIN = 0.8 
+        # 💡 サラサラ関節に合わせて比例ゲインをマイルドに調整
+        P_GAIN = 0.5 
         
-        # 💡 他に影響を与えない安全な範囲（0.45 Nm）で、風力の最大出力を引き上げる
-        MAX_DRIVE_TORQUE_BASE = 0.2
+        # 💡 修正：サラサラ関節には 0.20 は強すぎたため、安全な 「0.04 Nm」 に落とす
+        MAX_DRIVE_TORQUE_BASE = 0.04
         
         tau_des = P_GAIN * angle_diff_to_final
         remaining_angle = abs(angle_diff_to_final)
         
-        # 💡 【重要】減速ゾーンを極限まで狭く（0.03 rad）します。
-        # これにより、目標の直前までプロペラが強い風を維持し、沼の抵抗に負けて途中で止まるのを防ぎます。
-        DECEL_ZONE = 0.03 
+        # 💡 修正：減速ゾーンを 「0.20 rad（約11度）」 に大幅に拡大
+        # 目標に近づくにつれてフワッと風力を落とし、角速度をほぼゼロにしてソフトランディングさせます
+        DECEL_ZONE = 0.20 
         
         if remaining_angle < DECEL_ZONE:
             fade_factor = remaining_angle / DECEL_ZONE
@@ -201,14 +204,12 @@ class HydrusXiDeformationSequencer:
         self._send_internal_moment_command(0, current_preload)
         
         if elapsed >= duration:
-            # 💡 状態遷移の直前に Joint 1 の位置PID計算を完全に停止（脱力）させる
             if self._switch_joint_controller('joint1', 'stop'):
                 rospy.loginfo("[HydrusXiSequencer] Step 1 Completed ➔ Step 2 (Joint 1 純空力変形開始)")
                 self.current_step = SequenceStep.JOINT1_DEFORM
                 self.step_start_time = rospy.Time.now()
 
     def _step_joint1_deform(self):
-        # コントローラは停止しているため、このターゲット値は無視されブレーキになりません
         self.joint_targets['joint1'] = self.current_q['joint1'] 
         self._send_synchronized_command()
         
@@ -217,7 +218,6 @@ class HydrusXiDeformationSequencer:
         
         if abs(self._get_angle_difference(self.current_q['joint1'], self.target_q['joint1'])) <= ANGLE_ERROR_THRESHOLD:
             self._send_internal_moment_command(0, 0.0)
-            # 💡 変形完了！その時点の実際の角度を固定目標にして、位置PIDを再起動（カチッと固定）
             self.joint_targets['joint1'] = self.current_q['joint1']
             if self._switch_joint_controller('joint1', 'start'):
                 rospy.loginfo("[HydrusXiSequencer] Joint 1 変形完了 ➔ Step 3 (機体静定待ち)")
@@ -237,7 +237,6 @@ class HydrusXiDeformationSequencer:
             self.stabilize_loop_count = 0
             
         if self.stabilize_loop_count >= STABILIZE_REQUIRED_LOOPS or duration >= STABILIZE_TIMEOUT:
-            # 💡 状態遷移の直前に Joint 3 の位置PID計算を完全に停止（脱力）させる
             if self._switch_joint_controller('joint3', 'stop'):
                 rospy.loginfo("[HydrusXiSequencer] Joint 1 静定完了 ➔ Step 4 (Joint 3 純空力変形開始)")
                 self.current_step = SequenceStep.JOINT3_DEFORM
@@ -252,7 +251,6 @@ class HydrusXiDeformationSequencer:
         
         if abs(self._get_angle_difference(self.current_q['joint3'], self.target_q['joint3'])) <= ANGLE_ERROR_THRESHOLD:
             self._send_internal_moment_command(2, 0.0)
-            # 💡 変形完了！Joint 3 の位置PIDを再起動して固定
             self.joint_targets['joint3'] = self.current_q['joint3']
             if self._switch_joint_controller('joint3', 'start'):
                 rospy.loginfo("[HydrusXiSequencer] Joint 3 変形完了 ➔ Step 5 (機体静定待ち)")
