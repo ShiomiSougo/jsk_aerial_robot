@@ -4,9 +4,6 @@
 """
 Hydrus-Xi 連続変形シーケンス実行スクリプト（サラサラURDF・安全ソフトランディング版）
 変形中のみ該当関節のPositionControllerを強制停止させ、完全な自由関節を作り出す。
-
-使用例:
-  python hydrus_xi_deformation_sequence.py 0.8 -0.5 0.8
 """
 
 import rospy
@@ -55,6 +52,7 @@ STEP_DURATIONS = {
 LOOP_FREQ = 20.0                 # [Hz]
 DT = 1.0 / LOOP_FREQ
 
+
 class HydrusXiDeformationSequencer:
     def __init__(self, target_q1, target_q2, target_q3):
         self.target_q = {'joint1': target_q1, 'joint2': target_q2, 'joint3': target_q3}
@@ -76,6 +74,13 @@ class HydrusXiDeformationSequencer:
         self.joint_state_sub = rospy.Subscriber('/hydrus_xi/joint_states', JointState, self._joint_state_callback)
         
         rospy.loginfo("[HydrusXiSequencer] Initialized: q1=%.3f, q2=%.3f, q3=%.3f (Dynamic Switch Mode)", target_q1, target_q2, target_q3)
+        
+        # ★ 課題1対策: 起動時にすべてのコントローラを強制的にONにリセット（ゾンビ回避）
+        rospy.loginfo("[HydrusXiSequencer] 🧹 初期化: コントローラの状態をすべてONにリセットします...")
+        for j in ['joint1', 'joint2', 'joint3']:
+            self._switch_joint_controller(j, 'start')
+
+        # タイマー起動（絶対に消してはいけない行）
         self.loop_timer = rospy.Timer(rospy.Duration(DT), self._control_loop)
 
     def _switch_joint_controller(self, joint_key, action):
@@ -90,8 +95,7 @@ class HydrusXiDeformationSequencer:
                 req.start_controllers = []
                 req.stop_controllers = [controller_name]
                 
-            # 💡 修正：2 (STRICT) から 1 (BEST_EFFORT) に変更
-            # これにより、すでにコントローラが停止していてもエラーにせずスルーしてくれるため、二重停止エラーを防げます
+            # 💡 BEST_EFFORTに変更 (既にOFFでもエラーにしない)
             req.strictness = 1  
             
             res = self.switch_ctrl_client(req)
@@ -131,7 +135,6 @@ class HydrusXiDeformationSequencer:
         return self._normalize_angle(target - current)
 
     def _send_synchronized_command(self):
-        """【同期コマンド送信関数（位置制御の原点回帰版）】"""
         msg = JointState()
         msg.header.stamp = rospy.Time.now()
         
@@ -150,19 +153,18 @@ class HydrusXiDeformationSequencer:
 
     def _calculate_target_moment(self, joint_name):
         angle_diff_to_final = self._get_angle_difference(self.current_q[joint_name], self.target_q[joint_name])
-        
-        # 💡 サラサラ関節に合わせて比例ゲインをマイルドに調整
         P_GAIN = 0.5 
         
-        # 💡 修正：サラサラ関節には 0.20 は強すぎたため、安全な 「0.04 Nm」 に落とす
-        MAX_DRIVE_TORQUE_BASE = 0.5
+        # ★ 課題2対策: joint3だけ力が弱いので最大トルクを優しくする
+        if joint_name == 'joint3':
+            MAX_DRIVE_TORQUE_BASE = 0.15 
+        else:
+            MAX_DRIVE_TORQUE_BASE = 0.3
         
         tau_des = P_GAIN * angle_diff_to_final
         remaining_angle = abs(angle_diff_to_final)
         
-        # 💡 修正：減速ゾーンを 「0.20 rad（約11度）」 に大幅に拡大
-        # 目標に近づくにつれてフワッと風力を落とし、角速度をほぼゼロにしてソフトランディングさせます
-        DECEL_ZONE = 0.005 
+        DECEL_ZONE = 0.05 
         
         if remaining_angle < DECEL_ZONE:
             fade_factor = remaining_angle / DECEL_ZONE
@@ -327,6 +329,7 @@ class HydrusXiDeformationSequencer:
 
     def shutdown(self):
         self.loop_timer.shutdown()
+
 
 def main():
     rospy.init_node('hydrus_xi_deformation_sequencer', log_level=rospy.INFO)
