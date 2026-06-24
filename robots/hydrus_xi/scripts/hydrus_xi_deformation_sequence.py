@@ -162,7 +162,7 @@ class HydrusXiDeformationSequencer:
         
         # 💡 修正：減速ゾーンを 「0.20 rad（約11度）」 に大幅に拡大
         # 目標に近づくにつれてフワッと風力を落とし、角速度をほぼゼロにしてソフトランディングさせます
-        DECEL_ZONE = 0.20 
+        DECEL_ZONE = 0.05 
         
         if remaining_angle < DECEL_ZONE:
             fade_factor = remaining_angle / DECEL_ZONE
