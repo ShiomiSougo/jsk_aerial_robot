@@ -76,7 +76,7 @@ class HydrusXiDeformationSequencer:
         self.joint_state_sub = rospy.Subscriber('/hydrus_xi/joint_states', JointState, self._joint_state_callback)
         
         rospy.loginfo("[HydrusXiSequencer] Initialized: q1=%.3f, q2=%.3f, q3=%.3f (Dynamic Switch Mode)", target_q1, target_q2, target_q3)
-        
+        self.loop_timer = rospy.Timer(rospy.Duration(DT), self._control_loop)
 
     def _switch_joint_controller(self, joint_key, action):
         """ROS Controlのサービスを叩いて動的にPIDをON/OFFするヘルパー"""
@@ -155,7 +155,7 @@ class HydrusXiDeformationSequencer:
         P_GAIN = 0.5 
         
         # 💡 修正：サラサラ関節には 0.20 は強すぎたため、安全な 「0.04 Nm」 に落とす
-        MAX_DRIVE_TORQUE_BASE = 0.3
+        MAX_DRIVE_TORQUE_BASE = 0.5
         
         tau_des = P_GAIN * angle_diff_to_final
         remaining_angle = abs(angle_diff_to_final)
