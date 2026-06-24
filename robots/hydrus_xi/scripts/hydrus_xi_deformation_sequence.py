@@ -77,16 +77,7 @@ class HydrusXiDeformationSequencer:
         
         rospy.loginfo("[HydrusXiSequencer] Initialized: q1=%.3f, q2=%.3f, q3=%.3f (Dynamic Switch Mode)", target_q1, target_q2, target_q3)
         
-        # =========================================================
-        # ★ 課題1の修正：起動時にすべてのコントローラを強制的にONにリセット
-        # 前回のシミュレーションでOFFのまま終了してしまった状態（ゾンビ状態）を解消します
-        # =========================================================
-        rospy.loginfo("[HydrusXiSequencer] 🧹 初期化: コントローラの状態をすべてONにリセットします...")
-        for j in ['joint1', 'joint2', 'joint3']:
-            self._switch_joint_controller(j, 'start')
-        # =========================================================
 
-        self.loop_timer = rospy.Timer(rospy.Duration(DT), self._control_loop)
     def _switch_joint_controller(self, joint_key, action):
         """ROS Controlのサービスを叩いて動的にPIDをON/OFFするヘルパー"""
         controller_name = JOINT_CONTROLLERS[joint_key]
@@ -171,7 +162,7 @@ class HydrusXiDeformationSequencer:
         
         # 💡 修正：減速ゾーンを 「0.20 rad（約11度）」 に大幅に拡大
         # 目標に近づくにつれてフワッと風力を落とし、角速度をほぼゼロにしてソフトランディングさせます
-        DECEL_ZONE = 0.05 
+        DECEL_ZONE = 0.005 
         
         if remaining_angle < DECEL_ZONE:
             fade_factor = remaining_angle / DECEL_ZONE
