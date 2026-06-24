@@ -76,8 +76,17 @@ class HydrusXiDeformationSequencer:
         self.joint_state_sub = rospy.Subscriber('/hydrus_xi/joint_states', JointState, self._joint_state_callback)
         
         rospy.loginfo("[HydrusXiSequencer] Initialized: q1=%.3f, q2=%.3f, q3=%.3f (Dynamic Switch Mode)", target_q1, target_q2, target_q3)
-        self.loop_timer = rospy.Timer(rospy.Duration(DT), self._control_loop)
+        
+        # =========================================================
+        # ★ 課題1の修正：起動時にすべてのコントローラを強制的にONにリセット
+        # 前回のシミュレーションでOFFのまま終了してしまった状態（ゾンビ状態）を解消します
+        # =========================================================
+        rospy.loginfo("[HydrusXiSequencer] 🧹 初期化: コントローラの状態をすべてONにリセットします...")
+        for j in ['joint1', 'joint2', 'joint3']:
+            self._switch_joint_controller(j, 'start')
+        # =========================================================
 
+        self.loop_timer = rospy.Timer(rospy.Duration(DT), self._control_loop)
     def _switch_joint_controller(self, joint_key, action):
         """ROS Controlのサービスを叩いて動的にPIDをON/OFFするヘルパー"""
         controller_name = JOINT_CONTROLLERS[joint_key]
@@ -179,38 +188,18 @@ class HydrusXiDeformationSequencer:
     
     # ======================== 各ステップの実行関数 ========================
 
-    def __init__(self, target_q1, target_q2, target_q3):
-        self.target_q = {'joint1': target_q1, 'joint2': target_q2, 'joint3': target_q3}
-        self.current_q = {'joint1': 0.0, 'joint2': 0.0, 'joint3': 0.0}
-        self.current_dq = {'joint1': 0.0, 'joint2': 0.0, 'joint3': 0.0}
-        self.current_effort = {'joint1': 0.0, 'joint2': 0.0, 'joint3': 0.0}
-        self.joint_targets = {'joint1': 0.0, 'joint2': 0.0, 'joint3': 0.0}
+    def _step_init(self):
+        self.joint_targets['joint1'] = self.current_q['joint1']
+        self.joint_targets['joint2'] = self.current_q['joint2']
+        self.joint_targets['joint3'] = self.current_q['joint3']
+        self._send_synchronized_command()
+        self._send_internal_moment_command(0, 0.0)
         
-        self.current_step = SequenceStep.INIT
-        self.step_start_time = None
-        self.stabilize_loop_count = 0
-        
-        # サービスクライアントの初期化
-        rospy.wait_for_service('/hydrus_xi/controller_manager/switch_controller')
-        self.switch_ctrl_client = rospy.ServiceProxy('/hydrus_xi/controller_manager/switch_controller', SwitchController)
-        
-        self.joints_ctrl_pub = rospy.Publisher('/hydrus_xi/joints_ctrl', JointState, queue_size=1)
-        self.moment_pub = rospy.Publisher('/hydrus_xi/target_internal_moment', Float64MultiArray, queue_size=1)
-        self.joint_state_sub = rospy.Subscriber('/hydrus_xi/joint_states', JointState, self._joint_state_callback)
-        
-        rospy.loginfo("[HydrusXiSequencer] Initialized: q1=%.3f, q2=%.3f, q3=%.3f (Dynamic Switch Mode)", target_q1, target_q2, target_q3)
-        
-        # =========================================================
-        # ★ 課題1の修正：起動時にすべてのコントローラを強制的にONにリセット
-        # 前回のシミュレーションでOFFのまま終了してしまった状態（ゾンビ状態）を解消します
-        # =========================================================
-        rospy.loginfo("[HydrusXiSequencer] 🧹 初期化: コントローラの状態をすべてONにリセットします...")
-        for j in ['joint1', 'joint2', 'joint3']:
-            self._switch_joint_controller(j, 'start')
-        # =========================================================
+        if (rospy.Time.now() - self.step_start_time).to_sec() >= STEP_DURATIONS[SequenceStep.INIT]:
+            rospy.loginfo("[HydrusXiSequencer] Step 0 Completed -> Step 1 (Joint 1 Pretension)")
+            self.current_step = SequenceStep.JOINT1_3_PRETENSION  
+            self.step_start_time = rospy.Time.now()
 
-        self.loop_timer = rospy.Timer(rospy.Duration(DT), self._control_loop)
-        
     def _step_joints_pretension(self):
         self.joint_targets['joint1'] = self.current_q['joint1']
         self.joint_targets['joint3'] = self.current_q['joint3']
