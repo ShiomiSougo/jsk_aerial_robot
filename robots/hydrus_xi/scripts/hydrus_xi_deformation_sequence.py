@@ -180,14 +180,25 @@ class HydrusXiDeformationSequencer:
     # ======================== 各ステップの実行関数 ========================
 
     def _step_init(self):
+        # どの関節も動かさない
         self.joint_targets['joint1'] = self.current_q['joint1']
         self.joint_targets['joint2'] = self.current_q['joint2']
         self.joint_targets['joint3'] = self.current_q['joint3']
         self._send_synchronized_command()
         self._send_internal_moment_command(0, 0.0)
         
-        if (rospy.Time.now() - self.step_start_time).to_sec() >= STEP_DURATIONS[SequenceStep.INIT]:
-            rospy.loginfo("[HydrusXiSequencer] Step 0 Completed -> Step 1 (Joint 1 Pretension)")
+        # 💡 追加：初期姿勢が静止しているかを厳しくチェックする
+        # すべての関節の速度がほぼゼロになるまで、どれだけ時間がかかってもStep 1に進まない
+        vel_sum = abs(self.current_dq['joint1']) + abs(self.current_dq['joint2']) + abs(self.current_dq['joint3'])
+        
+        # 初期ホバリングの最低時間(5秒)かつ、振動が収まったことを確認
+        if (rospy.Time.now() - self.step_start_time).to_sec() >= 5.0 and vel_sum < 0.005:
+            rospy.loginfo("[HydrusXiSequencer] 初期静止完了 ➔ Step 1へ移行")
+            self.current_step = SequenceStep.JOINT1_3_PRETENSION  
+            self.step_start_time = rospy.Time.now()
+        elif (rospy.Time.now() - self.step_start_time).to_sec() > 10.0:
+            # 10秒待っても揺れが収まらないなら、無理やり進む
+            rospy.logwarn("[HydrusXiSequencer] 初期静止タイムアウト、強行移行")
             self.current_step = SequenceStep.JOINT1_3_PRETENSION  
             self.step_start_time = rospy.Time.now()
 
