@@ -63,6 +63,9 @@ class HydrusXiDeformationSequencer:
         self.current_effort = {'joint1': 0.0, 'joint2': 0.0, 'joint3': 0.0}
         self.joint_targets = {'joint1': 0.0, 'joint2': 0.0, 'joint3': 0.0}
         
+        # ===== 【修正1追加】コントローラ停止時の維持トルク引き継ぎ用 =====
+        self.last_sent_tau = {'joint1': 0.0, 'joint2': 0.0, 'joint3': 0.0}
+        
         self.current_step = SequenceStep.INIT
         self.step_start_time = None
         self.stabilize_loop_count = 0
@@ -77,6 +80,18 @@ class HydrusXiDeformationSequencer:
         
         rospy.loginfo("[HydrusXiSequencer] Initialized: q1=%.3f, q2=%.3f, q3=%.3f (Dynamic Switch Mode)", target_q1, target_q2, target_q3)
         self.loop_timer = rospy.Timer(rospy.Duration(DT), self._control_loop)
+
+    # ===== 【修正1】_prepare_transition 関数の追加 =====
+    def _prepare_transition(self, joint_name):
+        """コントローラを切る前に、その時の維持トルクを初期値として引き継ぐ"""
+        # 現在サーボが出しているトルクを取得
+        holding_torque = self.current_effort[joint_name]
+        
+        # 💡 これを初期値としてセットすることで、停止時の急な力抜けを防ぐ
+        self.last_sent_tau[joint_name] = holding_torque
+        
+        # あとはコントローラを止める
+        return self._switch_joint_controller(joint_name, 'stop')
 
     def _switch_joint_controller(self, joint_key, action):
         """ROS Controlのサービスを叩いて動的にPIDをON/OFFするヘルパー"""
@@ -247,8 +262,9 @@ class HydrusXiDeformationSequencer:
         else:
             self.stabilize_loop_count = 0
             
+        # ===== 【修正2】停止の瞬間に現在のeffortを引き継ぐ =====
         if self.stabilize_loop_count >= STABILIZE_REQUIRED_LOOPS or duration >= STABILIZE_TIMEOUT:
-            if self._switch_joint_controller('joint3', 'stop'):
+            if self._prepare_transition('joint3'):
                 rospy.loginfo("[HydrusXiSequencer] Joint 1 静定完了 ➔ Step 4 (Joint 3 純空力変形開始)")
                 self.current_step = SequenceStep.JOINT3_DEFORM
                 self.step_start_time = rospy.Time.now()
