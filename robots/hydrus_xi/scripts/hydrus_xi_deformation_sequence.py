@@ -155,7 +155,7 @@ class HydrusXiDeformationSequencer:
         P_GAIN = 0.5 
         
         # 💡 修正：サラサラ関節には 0.20 は強すぎたため、安全な 「0.04 Nm」 に落とす
-        MAX_DRIVE_TORQUE_BASE = 0.6
+        MAX_DRIVE_TORQUE_BASE = 0.3
         
         tau_des = P_GAIN * angle_diff_to_final
         remaining_angle = abs(angle_diff_to_final)
