@@ -137,7 +137,7 @@ namespace
     if (planner->hasMomentCommand() && planner->getTargetJointIndex() >= 0) {
         double current_tau = planner->computeExactInternalMoment(x, robot_model);
         double diff = current_tau - planner->getTauDesTarget();
-        double w_tau = 1500.0;
+        double w_tau = 2500.0;
         objective_base -= w_tau * (diff * diff); 
     }
 
