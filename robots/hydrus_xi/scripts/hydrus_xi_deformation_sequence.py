@@ -213,10 +213,10 @@ class HydrusXiDeformationSequencer:
     # ======================== 各ステップの実行関数 ========================
 
     def _step_init(self):
-        # どの関節も動かさないように、現在の位置をターゲットに固定
-        self.joint_targets['joint1'] = self.current_q['joint1']
-        self.joint_targets['joint2'] = self.current_q['joint2']
-        self.joint_targets['joint3'] = self.current_q['joint3']
+        # 💡 修正：現在の位置（current_q）による上書きを削除！
+        # __init__で取得した「起動時の初期ターゲット」をそのまま送信し続けることで、
+        # 関節をガチッとホールド（完全固定）させます。
+        
         self._send_synchronized_command()
         self._send_internal_moment_command(0, 0.0)
         
