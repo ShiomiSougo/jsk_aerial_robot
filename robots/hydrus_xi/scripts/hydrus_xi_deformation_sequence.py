@@ -38,7 +38,7 @@ STABILIZE_REQUIRED_LOOPS = 10     # 収束ループ数
 STABILIZE_TIMEOUT = 4.0           # タイムアウト時間 [s]
 
 # 物理的な予張力パラメータ
-PRELOAD_TORQUE = 0.40             # サラサラ関節に合わせてプリロードも優しく [Nm]
+PRELOAD_TORQUE = 0.40             # 💡 サラサラ関節に合わせてプリロードも優しく [Nm]
 
 # 🎯 特定された正確なコントローラ名マッピング
 JOINT_CONTROLLERS = {
@@ -59,14 +59,15 @@ class HydrusXiDeformationSequencer:
     def __init__(self, target_q1, target_q2, target_q3):
         self.target_q = {'joint1': target_q1, 'joint2': target_q2, 'joint3': target_q3}
         
-        # 💡 受信トピック構造に合わせ、内部状態の辞書は全7関節で保持（現在地の正確な把握のため）
-        all_names = ['gimbal1', 'gimbal2', 'gimbal3', 'gimbal4', 'joint1', 'joint2', 'joint3']
-        self.current_q = {name: 0.0 for name in all_names}
-        self.current_dq = {name: 0.0 for name in all_names}
-        self.current_effort = {name: 0.0 for name in all_names}
+        # ⭕ 【修正】joints_ctrlトピックのエラーを防ぐため、送信対象はjointのみにする
+        self.all_joint_names = ['joint1', 'joint2', 'joint3']
         
-        # 💡 送信対象はエラー（no matching servo handler）を回避するため、jointのみに絞る
-        self.send_joint_names = ['joint1', 'joint2', 'joint3']
+        # 💡 受信トピック構造（joint_states）に合わせ、内部状態の辞書は全7関節で保持する
+        full_joints = ['gimbal1', 'gimbal2', 'gimbal3', 'gimbal4', 'joint1', 'joint2', 'joint3']
+        self.current_q = {name: 0.0 for name in full_joints}
+        self.current_dq = {name: 0.0 for name in full_joints}
+        self.current_effort = {name: 0.0 for name in full_joints}
+        
         self.joint_targets = {'joint1': 0.0, 'joint2': 0.0, 'joint3': 0.0}
         
         self.current_step = SequenceStep.INIT
@@ -82,30 +83,29 @@ class HydrusXiDeformationSequencer:
         self.joint_state_sub = rospy.Subscriber('/hydrus_xi/joint_states', JointState, self._joint_state_callback)
         
         # =====================================================================
-        # 🛠️ 関節状態メッセージの同期 ＆ 初期ターゲットの設定
+        # 🛠️ 最初の関節状態メッセージが届くまで待機 ＆ 初期ターゲットの設定
         # =====================================================================
-        rospy.loginfo("[HydrusXiSequencer] ⏳ /hydrus_xi/joint_states トピックの受信を開始します...")
+        rospy.loginfo("[HydrusXiSequencer] ⏳ 最初の /hydrus_xi/joint_states トピックの受信を待っています...")
         try:
-            # 安定して値を吸い上げるために少しの間サブスクライバを回す
-            rospy.wait_for_message('/hydrus_xi/joint_states', JointState, timeout=5.0)
-            rospy.sleep(0.5) 
+            first_msg = rospy.wait_for_message('/hydrus_xi/joint_states', JointState, timeout=5.0)
+            self._joint_state_callback(first_msg) # 受信データを反映して self.current_q の初期値を上書き
             
-            # 目標値の初期値を、今読み込んだ最新の有効な現在位置に同期（起動時の暴れを抑制）
+            # 目標値（指令値）の初期値を、0.0 ではなく今読み込んだ最新の現在位置にする
             self.joint_targets['joint1'] = self.current_q['joint1']
             self.joint_targets['joint2'] = self.current_q['joint2']
             self.joint_targets['joint3'] = self.current_q['joint3']
             
-            rospy.loginfo("[HydrusXiSequencer] 🟩 初期状態の同期に成功しました。(q2の初期同期位置: %.3f)", self.current_q['joint2'])
+            rospy.loginfo("[HydrusXiSequencer] 🟩 初期状態の受信に成功しました。(q2の初期位置: %.3f)", self.current_q['joint2'])
         except rospy.ROSException:
             rospy.logwarn("[HydrusXiSequencer] ⚠️ トピックの待機がタイムアウトしました。初期値 0.0 で処理を開始します。")
 
-        # Publisherの接続が確立するまで確実に待つ
+        # Publisher（送信経路）の接続が相手と確立するまで確実に待つ（接続時の空振り・リセットを防ぐガード）
         rospy.loginfo("[HydrusXiSequencer] ⏳ コントローラ（シミュレータ）との接続確立を待っています...")
         rate_wait = rospy.Rate(10)
         while self.joints_ctrl_pub.get_num_connections() == 0 and not rospy.is_shutdown():
             rate_wait.sleep()
             
-        # 接続直後に現在地維持コマンドを送信
+        # タイマーが回る前（モーメント計算前）に、接続された瞬間に現在地維持コマンドを1発叩き込む
         self._send_synchronized_command()
         rospy.loginfo("[HydrusXiSequencer] 🟩 コントローラとの接続が確立。初期姿勢維持コマンドを送信しました。")
         # =====================================================================
@@ -164,13 +164,19 @@ class HydrusXiDeformationSequencer:
         return self._normalize_angle(target - current)
 
     def _send_synchronized_command(self):
-        """💡 【修正】gimbalのエラーを回避するため、joints_ctrlが受け付けるjoint1~3のみをパブリッシュする"""
+        """【修正版】joints_ctrl が受け付ける関節（joint1~3）のみを安全に同期パブリッシュ"""
         msg = JointState()
         msg.header.stamp = rospy.Time.now()
         
-        for name in self.send_joint_names:
+        for name in self.all_joint_names:
             msg.name.append(name)
-            msg.position.append(float(self.joint_targets[name]))
+            
+            # 変形対象のjoint1, 2, 3はPython側でターゲット管理
+            if name in self.joint_targets:
+                msg.position.append(float(self.joint_targets[name]))
+            else:
+                msg.position.append(float(self.current_q.get(name, 0.0)))
+                
             msg.velocity.append(0.0)
             msg.effort.append(0.0)
                 
@@ -184,8 +190,8 @@ class HydrusXiDeformationSequencer:
     def _calculate_target_moment(self, joint_name):
         angle_diff_to_final = self._get_angle_difference(self.current_q[joint_name], self.target_q[joint_name])
         
-        P_GAIN = 0.2
-        MAX_DRIVE_TORQUE_BASE = 0.1
+        P_GAIN = 0.6
+        MAX_DRIVE_TORQUE_BASE = 0.15
         tau_des = P_GAIN * angle_diff_to_final
         remaining_angle = abs(angle_diff_to_final)
         
@@ -270,7 +276,7 @@ class HydrusXiDeformationSequencer:
         else:
             self.stabilize_loop_count = 0
             
-        # 最低3秒(3.0s)は必ずこのフェーズに留まり、かつ静定条件を満たすかタイムアウト(4.0s)したら移行する
+        # 💡 修正：最低3秒(3.0s)は必ずこのフェーズに留まり、かつ静定条件を満たすかタイムアウト(4.0s)したら移行する
         if duration >= 3.0:
             if self.stabilize_loop_count >= STABILIZE_REQUIRED_LOOPS or duration >= STABILIZE_TIMEOUT:
                 if self._switch_joint_controller('joint3', 'stop'):
@@ -317,6 +323,7 @@ class HydrusXiDeformationSequencer:
        
         proximity_to_singularity = max(0.0, min(1.0, 1.0 - (q1_abs + q3_abs + q2_abs) / 2.0))
         
+        # 💡 修正：極端な減速（0.9）をやめ、0.4 程度にして速度が落ちすぎないようにガード
         ramp_reduction_factor = 1.0 - 0.4 * (proximity_to_singularity ** 2)
         dynamic_ramp_rate = JOINT_RAMP_RATE_BASE * ramp_reduction_factor
         
@@ -328,6 +335,9 @@ class HydrusXiDeformationSequencer:
             
         self._send_synchronized_command()
         
+        # 💡 修正：大きな角度移動でモーメントが暴走するのを防ぐため、
+        # joint2 サーボ変形中の他関節への干渉補償トルクを完全に「0.0」にする！
+        # これによりサーボが外力に負けてロックする現象を防ぎます。
         self._send_internal_moment_command(0, 0.0)
         self._send_internal_moment_command(2, 0.0)
         
