@@ -58,9 +58,13 @@ DT = 1.0 / LOOP_FREQ
 class HydrusXiDeformationSequencer:
     def __init__(self, target_q1, target_q2, target_q3):
         self.target_q = {'joint1': target_q1, 'joint2': target_q2, 'joint3': target_q3}
-        self.current_q = {'joint1': 0.0, 'joint2': 0.0, 'joint3': 0.0}
-        self.current_dq = {'joint1': 0.0, 'joint2': 0.0, 'joint3': 0.0}
-        self.current_effort = {'joint1': 0.0, 'joint2': 0.0, 'joint3': 0.0}
+        
+        # 💡 修正：受信トピック構造に合わせ、ジンバルを含めた全7関節の名前で初期化
+        self.all_joint_names = ['gimbal1', 'gimbal2', 'gimbal3', 'gimbal4', 'joint1', 'joint2', 'joint3']
+        self.current_q = {name: 0.0 for name in self.all_joint_names}
+        self.current_dq = {name: 0.0 for name in self.all_joint_names}
+        self.current_effort = {name: 0.0 for name in self.all_joint_names}
+        
         self.joint_targets = {'joint1': 0.0, 'joint2': 0.0, 'joint3': 0.0}
         
         self.current_step = SequenceStep.INIT
@@ -76,29 +80,29 @@ class HydrusXiDeformationSequencer:
         self.joint_state_sub = rospy.Subscriber('/hydrus_xi/joint_states', JointState, self._joint_state_callback)
         
         # =====================================================================
-        # 🛠️ 【修正】最初の関節状態メッセージが届くまで待機 ＆ 初期ターゲットの設定
+        # 🛠️ 最初の関節状態メッセージが届くまで待機 ＆ 初期ターゲットの設定
         # =====================================================================
         rospy.loginfo("[HydrusXiSequencer] ⏳ 最初の /hydrus_xi/joint_states トピックの受信を待っています...")
         try:
             first_msg = rospy.wait_for_message('/hydrus_xi/joint_states', JointState, timeout=5.0)
             self._joint_state_callback(first_msg) # 受信データを反映して self.current_q の初期値を上書き
             
-            # 💡 追加：目標値（指令値）の初期値を、0.0 ではなく今読み込んだ最新の現在地にする
+            # 目標値（指令値）の初期値を、0.0 ではなく今読み込んだ最新の現在位置にする
             self.joint_targets['joint1'] = self.current_q['joint1']
             self.joint_targets['joint2'] = self.current_q['joint2']
             self.joint_targets['joint3'] = self.current_q['joint3']
             
-            rospy.loginfo("[HydrusXiSequencer] 🟩 初期状態の受信に成功しました。 (q2の初期値: %.3f)", self.current_q['joint2'])
+            rospy.loginfo("[HydrusXiSequencer] 🟩 初期状態の受信に成功しました。(q2の初期位置: %.3f)", self.current_q['joint2'])
         except rospy.ROSException:
             rospy.logwarn("[HydrusXiSequencer] ⚠️ トピックの待機がタイムアウトしました。初期値 0.0 で処理を開始します。")
 
-        # 💡 追加：Publisher（送信経路）の接続が相手と確立するまで確実に待つ（空振りを防ぐガード）
+        # Publisher（送信経路）の接続が相手と確立するまで確実に待つ（接続時の空振り・リセットを防ぐガード）
         rospy.loginfo("[HydrusXiSequencer] ⏳ コントローラ（シミュレータ）との接続確立を待っています...")
         rate_wait = rospy.Rate(10)
         while self.joints_ctrl_pub.get_num_connections() == 0 and not rospy.is_shutdown():
             rate_wait.sleep()
             
-        # 💡 追加：タイマーが回る前に、接続された瞬間に「今動くな！」という現在地コマンドを1発叩き込む
+        # タイマーが回る前（モーメント計算前）に、接続された瞬間に現在地維持コマンドを1発叩き込む
         self._send_synchronized_command()
         rospy.loginfo("[HydrusXiSequencer] 🟩 コントローラとの接続が確立。初期姿勢維持コマンドを送信しました。")
         # =====================================================================
@@ -157,13 +161,20 @@ class HydrusXiDeformationSequencer:
         return self._normalize_angle(target - current)
 
     def _send_synchronized_command(self):
-        """【同期コマンド送信関数（位置制御の原点回帰版）】"""
+        """【修正版：全7要素同期コマンド送信関数】下位システムが要求する配列順序・サイズに完全準拠"""
         msg = JointState()
         msg.header.stamp = rospy.Time.now()
         
-        for joint_name in ['joint1', 'joint2', 'joint3']:
-            msg.name.append(joint_name)
-            msg.position.append(float(self.joint_targets[joint_name]))
+        for name in self.all_joint_names:
+            msg.name.append(name)
+            
+            # 変形対象のjoint1, 2, 3はPython側でターゲット管理
+            if name in self.joint_targets:
+                msg.position.append(float(self.joint_targets[name]))
+            else:
+                # ジンバル4つに関しては、現在地をそのままオウム返しして意図せぬリセットを防ぐ
+                msg.position.append(float(self.current_q.get(name, 0.0)))
+                
             msg.velocity.append(0.0)
             msg.effort.append(0.0)
                 
@@ -201,7 +212,6 @@ class HydrusXiDeformationSequencer:
 
     def _step_init(self):
         # どの関節も動かさないように、現在の位置をターゲットに固定
-        # （__init__内の修正により、ここには正しく受信した初期姿勢が入っています）
         self.joint_targets['joint1'] = self.current_q['joint1']
         self.joint_targets['joint2'] = self.current_q['joint2']
         self.joint_targets['joint3'] = self.current_q['joint3']
