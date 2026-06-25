@@ -232,7 +232,11 @@ void HydrusXiUnderActuatedNavigator::initialize(ros::NodeHandle nh, ros::NodeHan
   vectoring_nl_solver_->add_inequality_constraint(baselinkRotConstraint, this, 1e-8);
 
   vectoring_nl_solver_->set_xtol_rel(1e-4);
-  vectoring_nl_solver_->set_maxeval(1000);
+  
+  // ====================================================================
+  // ★ 調整ポイント：最大計算回数を制限して30秒フリーズを防ぐ
+  // ====================================================================
+  vectoring_nl_solver_->set_maxeval(50); // 元の1000から50〜100程度に制限してリアルタイム性を確保
 
   double rotor_num = robot_model->getRotorNum();
 
@@ -260,6 +264,12 @@ void HydrusXiUnderActuatedNavigator::initialize(ros::NodeHandle nh, ros::NodeHan
 
   if(!yaw_range_lp_solver_.initSolver())
     throw std::runtime_error("can not init LP solver based on osqp");
+
+  // ====================================================================
+  // ★ 追加：シミュレーション再起動時のためにジンバル角の初期状態を完全リセット
+  // ====================================================================
+  opt_gimbal_angles_.clear();
+  prev_opt_gimbal_angles_.clear();
 
   plan_thread_ = std::thread(boost::bind(&HydrusXiUnderActuatedNavigator::threadFunc, this));
 }
