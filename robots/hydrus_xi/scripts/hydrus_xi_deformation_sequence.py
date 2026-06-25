@@ -318,7 +318,9 @@ class HydrusXiDeformationSequencer:
         q2_abs = abs(self.current_q['joint2'])
        
         proximity_to_singularity = max(0.0, min(1.0, 1.0 - (q1_abs + q3_abs + q2_abs) / 2.0))
-        ramp_reduction_factor = 1.0 - 0.9 * (proximity_to_singularity ** 2)
+        
+        # 💡 修正：極端な減速（0.9）をやめ、0.4 程度にして速度が落ちすぎないようにガード
+        ramp_reduction_factor = 1.0 - 0.4 * (proximity_to_singularity ** 2)
         dynamic_ramp_rate = JOINT_RAMP_RATE_BASE * ramp_reduction_factor
         
         angle_diff = self._get_angle_difference(self.joint_targets['joint2'], self.target_q['joint2'])
@@ -329,10 +331,11 @@ class HydrusXiDeformationSequencer:
             
         self._send_synchronized_command()
         
-        tau_comp1 = self._calculate_target_moment('joint1')
-        tau_comp3 = self._calculate_target_moment('joint3')
-        self._send_internal_moment_command(0, tau_comp1 * 0.5)
-        self._send_internal_moment_command(2, tau_comp3 * 0.5)
+        # 💡 修正：大きな角度移動でモーメントが暴走するのを防ぐため、
+        # joint2 サーボ変形中の他関節への干渉補償トルクを完全に「0.0」にする！
+        # これによりサーボが外力に負けてロックする現象を防ぎます。
+        self._send_internal_moment_command(0, 0.0)
+        self._send_internal_moment_command(2, 0.0)
         
         if abs(self._get_angle_difference(self.current_q['joint2'], self.target_q['joint2'])) <= ANGLE_ERROR_THRESHOLD:
             rospy.loginfo("[HydrusXiSequencer] Step 6 Completed -> Step 7 (COMPLETE)")
