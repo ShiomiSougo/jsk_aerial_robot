@@ -239,20 +239,13 @@ class HydrusXiDeformationSequencer:
         progress = min(1.0, elapsed / duration)
         
         current_preload = PRELOAD_TORQUE * progress
-        self._send_internal_moment_command(0, current_preload)  # 💡 インデックスは「0」のままでOKです！
+        self._send_internal_moment_command(0, current_preload)
         
         if elapsed >= duration:
-            rospy.loginfo("[HydrusXiSequencer] ⏳ Joint 1 のコントローラ停止を要求中...")
-            # 💡 コントローラ停止サービスを呼び出し、C++側が「止めたよ」と返事するのをその場で待つ
-            success = self._switch_joint_controller('joint1', 'stop')
-            
-            if success:
-                rospy.loginfo("[HydrusXiSequencer] 🟩 コントローラ停止確認完了 ➔ Step 2 (Joint 1 純空力変形開始)")
+            if self._switch_joint_controller('joint1', 'stop'):
+                rospy.loginfo("[HydrusXiSequencer] Step 1 Completed ➔ Step 2 (Joint 1 純空力変形開始)")
                 self.current_step = SequenceStep.JOINT1_DEFORM
                 self.step_start_time = rospy.Time.now()
-            else:
-                rospy.logwarn("[HydrusXiSequencer] ⚠️ コントローラ停止に失敗。次ループで再試行します。")
-                
 
     def _step_joint1_deform(self):
         self.joint_targets['joint1'] = self.current_q['joint1'] 
