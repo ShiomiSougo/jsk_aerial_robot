@@ -75,6 +75,18 @@ class HydrusXiDeformationSequencer:
         self.moment_pub = rospy.Publisher('/hydrus_xi/target_internal_moment', Float64MultiArray, queue_size=1)
         self.joint_state_sub = rospy.Subscriber('/hydrus_xi/joint_states', JointState, self._joint_state_callback)
         
+        # =====================================================================
+        # 🛠️ 【修正案1を反映】最初の関節状態メッセージが届くまで待機
+        # =====================================================================
+        rospy.loginfo("[HydrusXiSequencer] ⏳ 最初の /hydrus_xi/joint_states トピックの受信を待っています...")
+        try:
+            first_msg = rospy.wait_for_message('/hydrus_xi/joint_states', JointState, timeout=5.0)
+            self._joint_state_callback(first_msg) # 受信データを反映してself.current_qの初期値を上書き
+            rospy.loginfo("[HydrusXiSequencer] 🟩 初期状態の受信に成功しました。")
+        except rospy.ROSException:
+            rospy.logwarn("[HydrusXiSequencer] ⚠️ トピックの待機がタイムアウトしました。初期値 0.0 で処理を開始します。")
+        # =====================================================================
+
         rospy.loginfo("[HydrusXiSequencer] Initialized: q1=%.3f, q2=%.3f, q3=%.3f (Dynamic Switch Mode)", target_q1, target_q2, target_q3)
         self.loop_timer = rospy.Timer(rospy.Duration(DT), self._control_loop)
 
@@ -90,8 +102,6 @@ class HydrusXiDeformationSequencer:
                 req.start_controllers = []
                 req.stop_controllers = [controller_name]
                 
-            # 💡 修正：2 (STRICT) から 1 (BEST_EFFORT) に変更
-            # これにより、すでにコントローラが停止していてもエラーにせずスルーしてくれるため、二重停止エラーを防げます
             req.strictness = 1  
             
             res = self.switch_ctrl_client(req)
@@ -151,17 +161,11 @@ class HydrusXiDeformationSequencer:
     def _calculate_target_moment(self, joint_name):
         angle_diff_to_final = self._get_angle_difference(self.current_q[joint_name], self.target_q[joint_name])
         
-        # 💡 サラサラ関節に合わせて比例ゲインをマイルドに調整
         P_GAIN = 0.5 
-        
-        # 💡 修正：サラサラ関節には 0.20 は強すぎたため、安全な 「0.04 Nm」 に落とす
         MAX_DRIVE_TORQUE_BASE = 0.5
-        
         tau_des = P_GAIN * angle_diff_to_final
         remaining_angle = abs(angle_diff_to_final)
         
-        # 💡 修正：減速ゾーンを 「0.20 rad（約11度）」 に大幅に拡大
-        # 目標に近づくにつれてフワッと風力を落とし、角速度をほぼゼロにしてソフトランディングさせます
         DECEL_ZONE = 0.005 
         
         if remaining_angle < DECEL_ZONE:
@@ -180,24 +184,21 @@ class HydrusXiDeformationSequencer:
     # ======================== 各ステップの実行関数 ========================
 
     def _step_init(self):
-        # どの関節も動かさない
+        # どの関節も動かさないように、現在の位置をターゲットに固定
+        # （__init__内の修正により、ここには正しく受信した初期姿勢が入っています）
         self.joint_targets['joint1'] = self.current_q['joint1']
         self.joint_targets['joint2'] = self.current_q['joint2']
         self.joint_targets['joint3'] = self.current_q['joint3']
         self._send_synchronized_command()
         self._send_internal_moment_command(0, 0.0)
         
-        # 💡 追加：初期姿勢が静止しているかを厳しくチェックする
-        # すべての関節の速度がほぼゼロになるまで、どれだけ時間がかかってもStep 1に進まない
         vel_sum = abs(self.current_dq['joint1']) + abs(self.current_dq['joint2']) + abs(self.current_dq['joint3'])
         
-        # 初期ホバリングの最低時間(5秒)かつ、振動が収まったことを確認
         if (rospy.Time.now() - self.step_start_time).to_sec() >= 5.0 and vel_sum < 0.005:
             rospy.loginfo("[HydrusXiSequencer] 初期静止完了 ➔ Step 1へ移行")
             self.current_step = SequenceStep.JOINT1_3_PRETENSION  
             self.step_start_time = rospy.Time.now()
         elif (rospy.Time.now() - self.step_start_time).to_sec() > 10.0:
-            # 10秒待っても揺れが収まらないなら、無理やり進む
             rospy.logwarn("[HydrusXiSequencer] 初期静止タイムアウト、強行移行")
             self.current_step = SequenceStep.JOINT1_3_PRETENSION  
             self.step_start_time = rospy.Time.now()
