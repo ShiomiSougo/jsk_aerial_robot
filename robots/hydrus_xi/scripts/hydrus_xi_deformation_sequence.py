@@ -276,8 +276,8 @@ class HydrusXiDeformationSequencer:
         else:
             self.stabilize_loop_count = 0
             
-        # 💡 修正：最低3秒(3.0s)は必ずこのフェーズに留まり、かつ静定条件を満たすかタイムアウト(4.0s)したら移行する
-        if duration >= 3.0:
+        # 💡 修正：最低5秒(5.0s)は必ずこのフェーズに留まり、かつ静定条件を満たすかタイムアウト(6.0s)したら移行する
+        if duration >= 5.0:
             if self.stabilize_loop_count >= STABILIZE_REQUIRED_LOOPS or duration >= STABILIZE_TIMEOUT:
                 if self._switch_joint_controller('joint3', 'stop'):
                     rospy.loginfo("[HydrusXiSequencer] Joint 1 静定完了（最低3秒待機達成） ➔ Step 4 (Joint 3 純空力変形開始)")
