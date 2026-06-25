@@ -276,11 +276,13 @@ class HydrusXiDeformationSequencer:
         else:
             self.stabilize_loop_count = 0
             
-        if self.stabilize_loop_count >= STABILIZE_REQUIRED_LOOPS or duration >= STABILIZE_TIMEOUT:
-            if self._switch_joint_controller('joint3', 'stop'):
-                rospy.loginfo("[HydrusXiSequencer] Joint 1 静定完了 ➔ Step 4 (Joint 3 純空力変形開始)")
-                self.current_step = SequenceStep.JOINT3_DEFORM
-                self.step_start_time = rospy.Time.now()
+        # 💡 修正：最低3秒(3.0s)は必ずこのフェーズに留まり、かつ静定条件を満たすかタイムアウト(4.0s)したら移行する
+        if duration >= 3.0:
+            if self.stabilize_loop_count >= STABILIZE_REQUIRED_LOOPS or duration >= STABILIZE_TIMEOUT:
+                if self._switch_joint_controller('joint3', 'stop'):
+                    rospy.loginfo("[HydrusXiSequencer] Joint 1 静定完了（最低3秒待機達成） ➔ Step 4 (Joint 3 純空力変形開始)")
+                    self.current_step = SequenceStep.JOINT3_DEFORM
+                    self.step_start_time = rospy.Time.now()
 
     def _step_joint3_deform(self):
         self.joint_targets['joint3'] = self.current_q['joint3']
