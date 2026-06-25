@@ -76,20 +76,36 @@ class HydrusXiDeformationSequencer:
         self.joint_state_sub = rospy.Subscriber('/hydrus_xi/joint_states', JointState, self._joint_state_callback)
         
         # =====================================================================
-        # 🛠️ 【修正案1を反映】最初の関節状態メッセージが届くまで待機
+        # 🛠️ 【修正】最初の関節状態メッセージが届くまで待機 ＆ 初期ターゲットの設定
         # =====================================================================
         rospy.loginfo("[HydrusXiSequencer] ⏳ 最初の /hydrus_xi/joint_states トピックの受信を待っています...")
         try:
             first_msg = rospy.wait_for_message('/hydrus_xi/joint_states', JointState, timeout=5.0)
-            self._joint_state_callback(first_msg) # 受信データを反映してself.current_qの初期値を上書き
-            rospy.loginfo("[HydrusXiSequencer] 🟩 初期状態の受信に成功しました。")
+            self._joint_state_callback(first_msg) # 受信データを反映して self.current_q の初期値を上書き
+            
+            # 💡 追加：目標値（指令値）の初期値を、0.0 ではなく今読み込んだ最新の現在地にする
+            self.joint_targets['joint1'] = self.current_q['joint1']
+            self.joint_targets['joint2'] = self.current_q['joint2']
+            self.joint_targets['joint3'] = self.current_q['joint3']
+            
+            rospy.loginfo("[HydrusXiSequencer] 🟩 初期状態の受信に成功しました。 (q2の初期値: %.3f)", self.current_q['joint2'])
         except rospy.ROSException:
             rospy.logwarn("[HydrusXiSequencer] ⚠️ トピックの待機がタイムアウトしました。初期値 0.0 で処理を開始します。")
+
+        # 💡 追加：Publisher（送信経路）の接続が相手と確立するまで確実に待つ（空振りを防ぐガード）
+        rospy.loginfo("[HydrusXiSequencer] ⏳ コントローラ（シミュレータ）との接続確立を待っています...")
+        rate_wait = rospy.Rate(10)
+        while self.joints_ctrl_pub.get_num_connections() == 0 and not rospy.is_shutdown():
+            rate_wait.sleep()
+            
+        # 💡 追加：タイマーが回る前に、接続された瞬間に「今動くな！」という現在地コマンドを1発叩き込む
+        self._send_synchronized_command()
+        rospy.loginfo("[HydrusXiSequencer] 🟩 コントローラとの接続が確立。初期姿勢維持コマンドを送信しました。")
         # =====================================================================
 
         rospy.loginfo("[HydrusXiSequencer] Initialized: q1=%.3f, q2=%.3f, q3=%.3f (Dynamic Switch Mode)", target_q1, target_q2, target_q3)
         self.loop_timer = rospy.Timer(rospy.Duration(DT), self._control_loop)
-
+        
     def _switch_joint_controller(self, joint_key, action):
         """ROS Controlのサービスを叩いて動的にPIDをON/OFFするヘルパー"""
         controller_name = JOINT_CONTROLLERS[joint_key]
