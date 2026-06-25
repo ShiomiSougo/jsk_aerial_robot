@@ -19,7 +19,7 @@ from controller_manager_msgs.srv import SwitchController, SwitchControllerReques
 from enum import Enum
 
 class SequenceStep(Enum):
-    INIT_HOLD = -1               # 💡 [新規] 起動直後のガッチリトルク固定フェーズ
+    INIT_HOLD = -1               # 起動直後のガッチリトルク固定フェーズ
     INIT = 0                      # 初期ホバリング
     JOINT1_3_PRETENSION = 1       # Joint 1 のプリロード（C++仕様合わせ）
     JOINT1_DEFORM = 2             # Joint 1 の純空力変形（コントローラ停止フェーズ）
@@ -40,7 +40,7 @@ STABILIZE_TIMEOUT = 4.0           # タイムアウト時間 [s]
 
 # 物理的な予張力パラメータ
 PRELOAD_TORQUE = 0.40             # 通常変形時のプリロード [Nm]
-STARTUP_HOLD_TORQUE = 0.55        # 💡 起動直後にガッチリ固定するためのトルク（0.5 Nm以上）
+STARTUP_HOLD_TORQUE = 0.55        # 起動直後にガッチリ固定するためのトルク（0.5 Nm以上）
 
 # 🎯 特定された正確なコントローラ名マッピング
 JOINT_CONTROLLERS = {
@@ -71,11 +71,11 @@ class HydrusXiDeformationSequencer:
         self.send_joint_names = ['joint1', 'joint2', 'joint3']
         self.joint_targets = {'joint1': 0.0, 'joint2': 0.0, 'joint3': 0.0}
         
-        # 💡 起動時はまず「ガッチリトルク固定フェーズ」から開始
+        # 起動時はまず「ガッチリトルク固定フェーズ」から開始
         self.current_step = SequenceStep.INIT_HOLD
         self.step_start_time = None
         self.stabilize_loop_count = 0
-        self.initial_input_ready = False # 目標角度の入力を受け付ける準備ができたかのフラグ
+        self.initial_input_ready = False 
         
         # サービスクライアントの初期化
         rospy.wait_for_service('/hydrus_xi/controller_manager/switch_controller')
@@ -205,8 +205,7 @@ class HydrusXiDeformationSequencer:
     # ======================== 各ステップの実行関数 ========================
 
     def _step_init_hold(self):
-        """💡 起動直後、すべての関節に0.5 Nm以上のトルクを出してガッチリ固定するフェーズ"""
-        # 現在地をキープするように位置指令を同期
+        """起動直後、すべての関節に0.5 Nm以上のトルクを出してガッチリ固定するフェーズ"""
         self.joint_targets['joint1'] = self.current_q['joint1']
         self.joint_targets['joint2'] = self.current_q['joint2']
         self.joint_targets['joint3'] = self.current_q['joint3']
@@ -218,14 +217,19 @@ class HydrusXiDeformationSequencer:
         self._send_internal_moment_command(2, STARTUP_HOLD_TORQUE)
         
         elapsed = (rospy.Time.now() - self.step_start_time).to_sec()
-        # 2秒間ガッチリホールドして機体が完全に静止したら、メイン側の入力受付を解放する
+        
         if elapsed >= 2.0:
+            # トルクを一旦開放
             self._send_internal_moment_command(0, 0.0)
             self._send_internal_moment_command(1, 0.0)
             self._send_internal_moment_command(2, 0.0)
-            rospy.loginfo("[HydrusXiSequencer] 🟩 起動時トルクホールド完了。機体が安定しました。目標角度の入力を受け付けます。")
-            self.initial_input_ready = True
-            # この後は main() から update_target_angles() が呼ばれるまでこのフェーズで待機します
+            
+            # 💡 【修正】ログ出力とフラグ立てを1回だけに制限し、自動で次のシーケンスに進む
+            rospy.loginfo("[HydrusXiSequencer] 🟩 起動時トルクホールド完了。機体が安定しました。")
+            
+            # コマンドライン引数（または初期目標値）が存在するため、自動的に初期変形ステップ（INIT）へ移行
+            self.current_step = SequenceStep.INIT
+            self.step_start_time = rospy.Time.now()
 
     def _step_init(self):
         self.joint_targets['joint1'] = self.current_q['joint1']
@@ -393,12 +397,8 @@ def main():
     rate = rospy.Rate(10) 
     
     while not rospy.is_shutdown():
-        # 💡 起動時のガッチリホールドが終わり、またはシーケンスが最後まで完了している場合に入力を受け付ける
-        if sequencer.initial_input_ready or sequencer.current_step == SequenceStep.COMPLETE:
-            # 完了後はフラグをリセットして次の完了まで入力を出さないように制御
-            if sequencer.current_step == SequenceStep.COMPLETE:
-                sequencer.initial_input_ready = False
-                
+        # シーケンスが一連の流れを完了(COMPLETE)した段階でのみ、コンソールからの次入力を受け付ける
+        if sequencer.current_step == SequenceStep.COMPLETE:
             print("\n" + "="*60)
             print(" ✨ 【Hydrus-Xi】ROS Control 動的スイッチ変形システム")
             print(" 次の目標関節角度 [q1 q2 q3] を入力してください。")
