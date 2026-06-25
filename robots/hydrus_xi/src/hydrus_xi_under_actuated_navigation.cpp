@@ -50,7 +50,7 @@ namespace
         double diff = current_tau - planner->getTauDesTarget();
         
         // ペナルティの重み（要求トルクにどれくらい執着するか。1000〜5000程度が目安）
-        double w_tau = 2000.0; 
+        double w_tau = 1000.0; 
         
         // NLoptは「最大化」を目指す設定になっているため、誤差の二乗を「引く（マイナスする）」
         objective_base -= w_tau * (diff * diff); 
@@ -137,7 +137,7 @@ namespace
     if (planner->hasMomentCommand() && planner->getTargetJointIndex() >= 0) {
         double current_tau = planner->computeExactInternalMoment(x, robot_model);
         double diff = current_tau - planner->getTauDesTarget();
-        double w_tau = 2000.0;
+        double w_tau = 1000.0;
         objective_base -= w_tau * (diff * diff); 
     }
 
