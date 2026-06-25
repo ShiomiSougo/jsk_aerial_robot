@@ -59,12 +59,14 @@ class HydrusXiDeformationSequencer:
     def __init__(self, target_q1, target_q2, target_q3):
         self.target_q = {'joint1': target_q1, 'joint2': target_q2, 'joint3': target_q3}
         
-        # 💡 提示いただいた全7関節の初期化構造を反映
+        # 💡 受信トピック構造に合わせ、内部状態の辞書は全7関節で保持（現在地の正確な把握のため）
         all_names = ['gimbal1', 'gimbal2', 'gimbal3', 'gimbal4', 'joint1', 'joint2', 'joint3']
         self.current_q = {name: 0.0 for name in all_names}
         self.current_dq = {name: 0.0 for name in all_names}
         self.current_effort = {name: 0.0 for name in all_names}
         
+        # 💡 送信対象はエラー（no matching servo handler）を回避するため、jointのみに絞る
+        self.send_joint_names = ['joint1', 'joint2', 'joint3']
         self.joint_targets = {'joint1': 0.0, 'joint2': 0.0, 'joint3': 0.0}
         
         self.current_step = SequenceStep.INIT
@@ -80,15 +82,15 @@ class HydrusXiDeformationSequencer:
         self.joint_state_sub = rospy.Subscriber('/hydrus_xi/joint_states', JointState, self._joint_state_callback)
         
         # =====================================================================
-        # 🛠️ 最初の関節状態メッセージが届くまで待機 ＆ 初期ターゲットの設定
+        # 🛠️ 関節状態メッセージの同期 ＆ 初期ターゲットの設定
         # =====================================================================
         rospy.loginfo("[HydrusXiSequencer] ⏳ /hydrus_xi/joint_states トピックの受信を開始します...")
         try:
-            # 💡 【joint2急変動対策】1発待つだけでなく、少しの間サブスクライバを回して確実に最新の安定値を現在地として吸い上げる
+            # 安定して値を吸い上げるために少しの間サブスクライバを回す
             rospy.wait_for_message('/hydrus_xi/joint_states', JointState, timeout=5.0)
-            rospy.sleep(0.5) # サブスクライバコールバックが複数回走り、実機の値を完全に current_q に反映させるための猶予
+            rospy.sleep(0.5) 
             
-            # 目標値（指令値）の初期値を、今読み込んだ最新の有効な現在位置にする
+            # 目標値の初期値を、今読み込んだ最新の有効な現在位置に同期（起動時の暴れを抑制）
             self.joint_targets['joint1'] = self.current_q['joint1']
             self.joint_targets['joint2'] = self.current_q['joint2']
             self.joint_targets['joint3'] = self.current_q['joint3']
@@ -97,13 +99,13 @@ class HydrusXiDeformationSequencer:
         except rospy.ROSException:
             rospy.logwarn("[HydrusXiSequencer] ⚠️ トピックの待機がタイムアウトしました。初期値 0.0 で処理を開始します。")
 
-        # Publisher（送信経路）の接続が相手と確立するまで確実に待つ（接続時の空振り・リセットを防ぐガード）
+        # Publisherの接続が確立するまで確実に待つ
         rospy.loginfo("[HydrusXiSequencer] ⏳ コントローラ（シミュレータ）との接続確立を待っています...")
         rate_wait = rospy.Rate(10)
         while self.joints_ctrl_pub.get_num_connections() == 0 and not rospy.is_shutdown():
             rate_wait.sleep()
             
-        # タイマーが回る前（モーメント計算前）に、接続された瞬間に現在地維持コマンドを1発叩き込む
+        # 接続直後に現在地維持コマンドを送信
         self._send_synchronized_command()
         rospy.loginfo("[HydrusXiSequencer] 🟩 コントローラとの接続が確立。初期姿勢維持コマンドを送信しました。")
         # =====================================================================
@@ -162,23 +164,13 @@ class HydrusXiDeformationSequencer:
         return self._normalize_angle(target - current)
 
     def _send_synchronized_command(self):
-        """💡 提示いただいた【修正版】受信トピックの順序に完全に一致させて送信する関数"""
+        """💡 【修正】gimbalのエラーを回避するため、joints_ctrlが受け付けるjoint1~3のみをパブリッシュする"""
         msg = JointState()
         msg.header.stamp = rospy.Time.now()
         
-        # 💡 受信トピックに存在するすべての関節名を定義
-        all_joint_names = ['gimbal1', 'gimbal2', 'gimbal3', 'gimbal4', 'joint1', 'joint2', 'joint3']
-        
-        for name in all_joint_names:
+        for name in self.send_joint_names:
             msg.name.append(name)
-            
-            # joint1, joint2, joint3 の場合は Python側で管理している目標値を代入
-            if name in self.joint_targets:
-                msg.position.append(float(self.joint_targets[name]))
-            else:
-                # ジンバル等の場合は、勝手に動かないように現在の計測値をそのままオウム返しする
-                msg.position.append(float(self.current_q.get(name, 0.0)))
-                
+            msg.position.append(float(self.joint_targets[name]))
             msg.velocity.append(0.0)
             msg.effort.append(0.0)
                 
