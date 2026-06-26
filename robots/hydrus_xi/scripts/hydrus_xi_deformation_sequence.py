@@ -23,9 +23,9 @@ class SequenceStep(Enum):
     JOINT1_3_PRETENSION = 1       # Joint 1 のプリロード（C++仕様合わせ）
     JOINT1_DEFORM = 2             # Joint 1 の純空力変形（コントローラ停止フェーズ）
     JOINT1_STABILIZE = 3          # Joint 1 変形後の機体揺れ収束待ち（コントローラ再開）
-    JOINT3_DEFORM = 4             # Joint 3 の純空力変形（コントローラ停止フェーズ）
-    JOINT3_STABILIZE = 5          # Joint 3 変形後の機体揺れ収束待ち（コントローラ再開）
-    JOINT2_SERVO = 6              # Joint 2 のサーボ変形
+    JOINT3_DEFORM = 5             # Joint 3 の純空力変形（コントローラ停止フェーズ）
+    JOINT3_STABILIZE = 6          # Joint 3 変形後の機体揺れ収束待ち（コントローラ再開）
+    JOINT2_SERVO = 4              # Joint 2 のサーボ変形
     COMPLETE = 7                  # 完了
 
 # パラメータ
