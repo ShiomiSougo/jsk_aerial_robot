@@ -249,6 +249,7 @@ class HydrusXiDeformationSequencer:
                 self.current_step = SequenceStep.JOINT1_DEFORM
                 self.step_start_time = rospy.Time.now()
 
+    # 修正案：rospy.sleepを使わず、elapsed（経過時間）で段階的に処理する
     def _step_joint1_deform(self):
         self.joint_targets['joint1'] = self.current_q['joint1'] 
         self._send_synchronized_command()
@@ -259,28 +260,39 @@ class HydrusXiDeformationSequencer:
         if abs(self._get_angle_difference(self.current_q['joint1'], self.target_q['joint1'])) <= ANGLE_ERROR_THRESHOLD:
             self._send_internal_moment_command(0, 0.0)
             self.joint_targets['joint1'] = self.current_q['joint1']
+            self._send_synchronized_command()
+            
+            # 💡 コントローラを起動して即座に遷移（0.1秒の待機は次のSTABILIZEフェーズの最初で担保されているため不要）
             if self._switch_joint_controller('joint1', 'start'):
-                rospy.loginfo("[HydrusXiSequencer] Joint 1 変形完了 ➔ Step 3 (機体静定待ち)")
+                rospy.loginfo("[HydrusXiSequencer] Joint 1 変形完了 ➔ Step 3")
                 self.stabilize_loop_count = 0
                 self.current_step = SequenceStep.JOINT1_STABILIZE
-                self.step_start_time = rospy.Time.now()
+                self.step_start_time = rospy.Time.now() # ここでリセットされるので、stabilize側の duration < 0.5 が綺麗に効きます
 
     def _step_joint1_stabilize(self):
-        self._send_synchronized_command()
-        
         current_vel = abs(self.current_dq['joint1'])
         duration = (rospy.Time.now() - self.step_start_time).to_sec()
         
-        if current_vel < STABILIZE_VELOCITY_THRESH:
-            self.stabilize_loop_count += 1
-        else:
-            self.stabilize_loop_count = 0
+        # ✅ 最初の0.5秒間は、現在位置を目標に強制上書き（追従ホールド）
+        if duration < 0.5:
+            self.joint_targets['joint1'] = self.current_q['joint1']
             
-        # 💡 修正：最低5秒(5.0s)は必ずこのフェーズに留まり、かつ静定条件を満たすかタイムアウト(6.0s)したら移行する
-        if duration >= 5.0:
+        # 同期コマンドの送信は、上の上書きロジックの後に1回呼べばOK
+        self._send_synchronized_command()
+        
+        # 判定ゾーン（最初の0.5秒のホールド期間が終わってから静定判定をカウント）
+        if duration >= 0.5:
+            if current_vel < STABILIZE_VELOCITY_THRESH:
+                self.stabilize_loop_count += 1
+            else:
+                self.stabilize_loop_count = 0
+                
+        # ✅ タイムアウトと移行条件の整理（例：最低3秒は待ちつつ、静定するかタイムアウト4秒で次へ）
+        MIN_WAIT = 3.0
+        if duration >= MIN_WAIT:
             if self.stabilize_loop_count >= STABILIZE_REQUIRED_LOOPS or duration >= STABILIZE_TIMEOUT:
                 if self._switch_joint_controller('joint3', 'stop'):
-                    rospy.loginfo("[HydrusXiSequencer] Joint 1 静定完了（最低3秒待機達成） ➔ Step 4 (Joint 3 純空力変形開始)")
+                    rospy.loginfo("[HydrusXiSequencer] Joint 1 静定完了 ➔ Step 4")
                     self.current_step = SequenceStep.JOINT3_DEFORM
                     self.step_start_time = rospy.Time.now()
 
