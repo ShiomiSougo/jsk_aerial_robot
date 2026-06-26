@@ -322,7 +322,7 @@ class HydrusXiDeformationSequencer:
             self.stabilize_loop_count = 0
 
         # しっかりと3秒姿勢を落ち着かせたあと、満を持して Joint 3 を完全フリーにする
-        MIN_WAIT_J2 = 3.0
+        MIN_WAIT_J2 = 5.0
         if duration >= MIN_WAIT_J2:
             if self.stabilize_loop_count >= STABILIZE_REQUIRED_LOOPS or duration >= STABILIZE_TIMEOUT:
                 if self._switch_joint_controller('joint3', 'stop'):
