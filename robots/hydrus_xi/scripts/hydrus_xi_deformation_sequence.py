@@ -195,7 +195,7 @@ class HydrusXiDeformationSequencer:
         tau_des = P_GAIN * angle_diff_to_final
         remaining_angle = abs(angle_diff_to_final)
         
-        DECEL_ZONE = 0.005 
+        DECEL_ZONE = 0.05 
         
         if remaining_angle < DECEL_ZONE:
             fade_factor = remaining_angle / DECEL_ZONE
