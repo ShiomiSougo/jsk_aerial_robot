@@ -270,7 +270,7 @@ class HydrusXiDeformationSequencer:
             else:
                 self.stabilize_loop_count = 0
                 
-        MIN_WAIT = 3.0
+        MIN_WAIT = 5.0
         if duration >= MIN_WAIT:
             if self.stabilize_loop_count >= STABILIZE_REQUIRED_LOOPS or duration >= STABILIZE_TIMEOUT:
                 # ⭕ 【順序変更】次は Joint 2 (位置制御) なので、ここでは controller3 ではなく何もしないで次へ
