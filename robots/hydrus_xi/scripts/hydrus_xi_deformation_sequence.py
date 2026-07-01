@@ -380,6 +380,11 @@ class HydrusXiDeformationSequencer:
             rospy.loginfo("[HydrusXiSequencer] 🎉 全空力・サーボ複合連続変形シーケンスが正常に完走しました！")
 
     def _control_loop(self, event):
+        def _control_loop(self, event):
+        # ログ出力の追加（動作確認用）
+            rospy.loginfo_throttle(1.0, "[DEBUG] Current Step: %s, Stabilize Count: %d" % (self.current_step, self.stabilize_loop_count))
+        
+        
         try:
             current_time = rospy.Time.now()
             if current_time.is_zero(): return
