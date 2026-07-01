@@ -337,6 +337,10 @@ class HydrusXiDeformationSequencer:
         tau_des = self._calculate_target_moment('joint3')
         self._send_internal_moment_command(2, tau_des)
         
+        # ログを追加：どの程度ターゲットとズレているか
+        angle_diff = self._get_angle_difference(self.current_q['joint3'], self.target_q['joint3'])
+        rospy.loginfo_throttle(1.0, f"[DEBUG] Joint 3 Deform: Diff={angle_diff:.4f}, Tau={tau_des:.4f}")
+        
         if abs(self._get_angle_difference(self.current_q['joint3'], self.target_q['joint3'])) <= ANGLE_ERROR_THRESHOLD:
             self._send_internal_moment_command(2, 0.0)
             self.joint_targets['joint3'] = self.current_q['joint3']
