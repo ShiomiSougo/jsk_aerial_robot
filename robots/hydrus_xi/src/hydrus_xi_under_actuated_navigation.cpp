@@ -300,28 +300,21 @@ bool HydrusXiUnderActuatedNavigator::plan()
   if(joint_positions_for_plan_.rows() == 0) return false;
 
   bool singular_form = true;
-  if(opt_gimbal_angles_.size() != 0)
+  if(control_gimbal_indices_.size() == 0)
     {
-      double delta_angle = gimbal_delta_angle_;
+      const auto& joint_names = robot_model_->getJointNames();
+      const auto& joint_indices = robot_model_->getJointIndices();
 
-      if(!robot_model_for_plan_->stabilityCheck(false))
+      for(int i = 0; i < joint_names.size(); i++)
         {
-          delta_angle = M_PI;
+          if(joint_names.at(i).find("joint") != std::string::npos)
+            {
+              if(fabs(joint_positions_for_plan_(joint_indices.at(i))) > 0.2) singular_form = false;
+            }
         }
 
-      // ========================================================
-      // ★ ここに追加：Joint 3 変形中は探索範囲を全域 (-PI to PI) に強制解放
-      // ========================================================
-      if (has_moment_command_ && target_joint_index_ == 2) { 
-          delta_angle = M_PI; 
-      }
-      // ========================================================
-
-      for(int i = 0; i < opt_gimbal_angles_.size(); i++)
-         {
-           lb.at(i) = opt_gimbal_angles_.at(i) - delta_angle;
-           ub.at(i) = opt_gimbal_angles_.at(i) + delta_angle;
-         }
+      for(const auto& name: control_gimbal_names_)
+        control_gimbal_indices_.push_back(robot_model_->getJointIndexMap().at(name));
     }
 
   std::vector<double> lb(control_gimbal_indices_.size(), - M_PI);
