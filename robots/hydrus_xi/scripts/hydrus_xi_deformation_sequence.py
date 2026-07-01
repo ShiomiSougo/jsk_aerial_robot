@@ -331,15 +331,19 @@ class HydrusXiDeformationSequencer:
                     self.step_start_time = rospy.Time.now()
 
     def _step_joint3_deform(self):
-        self.joint_targets['joint3'] = self.current_q['joint3']
+        self.joint_targets['joint3'] = self.target_q['joint3'] # 目標角度に固定
         self._send_synchronized_command()
         
+        # 既存の計算結果にブーストをかける（1.27radもの差があるため）
         tau_des = self._calculate_target_moment('joint3')
-        self._send_internal_moment_command(2, tau_des)
         
-        # ログを追加：どの程度ターゲットとズレているか
-        angle_diff = self._get_angle_difference(self.current_q['joint3'], self.target_q['joint3'])
-        rospy.loginfo_throttle(1.0, f"[DEBUG] Joint 3 Deform: Diff={angle_diff:.4f}, Tau={tau_des:.4f}")
+        # ブースト倍率を適用 (2.0倍にする)
+        boosted_tau = tau_des * 2.0 
+        
+        # ログにも反映
+        rospy.loginfo_throttle(1.0, f"[DEBUG] Joint 3 Deform: Diff={self._get_angle_difference(self.current_q['joint3'], self.target_q['joint3']):.4f}, Tau={boosted_tau:.4f}")
+        
+        self._send_internal_moment_command(2, boosted_tau)
         
         if abs(self._get_angle_difference(self.current_q['joint3'], self.target_q['joint3'])) <= ANGLE_ERROR_THRESHOLD:
             self._send_internal_moment_command(2, 0.0)
