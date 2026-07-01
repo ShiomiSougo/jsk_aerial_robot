@@ -294,6 +294,8 @@ void HydrusXiUnderActuatedNavigator::threadFunc()
 
 bool HydrusXiUnderActuatedNavigator::plan()
 {
+  ROS_INFO("nlopt: TargetJointIndex: %d, CurrentGimbalAngles: %f, %f, %f", 
+         target_joint_index_, opt_gimbal_angles_[0], opt_gimbal_angles_[1], opt_gimbal_angles_[2]);
   joint_positions_for_plan_ = robot_model_->getJointPositions();
 
   if(joint_positions_for_plan_.rows() == 0) return false;
