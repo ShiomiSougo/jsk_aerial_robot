@@ -21,38 +21,107 @@ namespace
     robot_model->updateRobotModel(joint_positions);
 
     if(!robot_model->stabilityCheck(planner->getPlanVerbose()))
-      {
+    {
         invalid_cnt ++;
         if(planner->getPlanVerbose()) ROS_WARN_STREAM("nlopt, robot stability is invalid with gimbals (cnt: " << invalid_cnt << ")");
         return 0;
-      }
+    }
 
     invalid_cnt = 0;
 
     Eigen::VectorXd force_v = robot_model->getStaticThrust();
     double average_force = force_v.sum() / force_v.size();
-    double variant = 0;
+    double variance_val = 0; // 名前の競合を回避
 
     for(int i = 0; i < force_v.size(); i++)
-      variant += ((force_v(i) - average_force) * (force_v(i) - average_force));
+      variance_val += ((force_v(i) - average_force) * (force_v(i) - average_force));
 
-    variant = sqrt(variant / force_v.size());
+    variance_val = sqrt(variance_val / force_v.size());
 
     double objective_base = planner->getForceNormWeight() * robot_model->getMass() / force_v.norm() 
-                          + planner->getForceVariantWeight() / variant 
+                          + planner->getForceVariantWeight() / variance_val 
                           + planner->getFCTMinWeight() * robot_model->getFeasibleControlTMin();
 
-    // ==============================================================
-    // ★ 追加：ハード制約（等式）の代わりとなるソフト制約（ペナルティ）
-    // ==============================================================
     if (planner->hasMomentCommand() && planner->getTargetJointIndex() >= 0) {
         double current_tau = planner->computeExactInternalMoment(x, robot_model);
         double diff = current_tau - planner->getTauDesTarget();
-        
-        // ペナルティの重み（要求トルクにどれくらい執着するか。1000〜5000程度が目安）
         double w_tau = 3000.0; 
-        
-        // NLoptは「最大化」を目指す設定になっているため、誤差の二乗を「引く（マイナスする）」
+        objective_base -= w_tau * (diff * diff); 
+    }
+
+    return objective_base; 
+  }
+
+  double maximizeMinYawTorque(const std::vector<double> &x, std::vector<double> &grad, void *planner_ptr)
+  {
+    cnt++;
+    HydrusXiUnderActuatedNavigator *planner = reinterpret_cast<HydrusXiUnderActuatedNavigator*>(planner_ptr);
+    auto robot_model = planner->getRobotModelForPlan();
+
+    KDL::JntArray joint_positions = planner->getJointPositionsForPlan();
+    for(int i = 0; i < x.size(); i++)
+      joint_positions(planner->getControlIndices().at(i)) = x.at(i);
+
+    robot_model->updateRobotModel(joint_positions);
+
+    if(!robot_model->stabilityCheck(planner->getPlanVerbose()))
+    {
+        invalid_cnt ++;
+        if(planner->getPlanVerbose()) ROS_WARN("nlopt, robot stability is invalid (cnt: %d)", invalid_cnt);
+        return 0;
+    }
+    
+    invalid_cnt = 0;
+
+    Eigen::VectorXd gradient = robot_model->calcWrenchMatrixOnCoG().row(5).transpose();
+    Eigen::VectorXd max_u, min_u;
+    double max_yaw, min_yaw;
+
+    planner->getYawRangeLPSolver().updateGradient(gradient);
+    if(!planner->getYawRangeLPSolver().solve())
+    {
+        ROS_ERROR("can not calcualte the min u by LP");
+        planner->setMaxMinYaw(0);
+    }
+    else
+    {
+        min_u = planner->getYawRangeLPSolver().getSolution();
+        min_yaw = (gradient.transpose() * min_u)(0);
+        if(min_yaw > 0) { min_yaw = 0; }
+    }
+
+    Eigen::VectorXd reverse_gradient = - gradient;
+    planner->getYawRangeLPSolver().updateGradient(reverse_gradient);
+    if(!planner->getYawRangeLPSolver().solve())
+    {
+        ROS_ERROR("can not calcualte the max u by LP");
+        planner->setMaxMinYaw(0);
+    }
+    else
+    {
+        max_u = planner->getYawRangeLPSolver().getSolution();
+        max_yaw = (gradient.transpose() * max_u)(0);
+    }
+
+    planner->setMaxMinYaw(std::min(max_yaw, -min_yaw));
+
+    Eigen::VectorXd force_v = robot_model->getStaticThrust();
+    double average_force = force_v.sum() / force_v.size();
+    double variance_val = 0; // 名前の競合を回避
+
+    for(int i = 0; i < force_v.size(); i++)
+      variance_val += ((force_v(i) - average_force) * (force_v(i) - average_force));
+
+    variance_val = sqrt(variance_val / force_v.size());
+
+    double objective_base = planner->getForceNormWeight() * robot_model->getMass() / force_v.norm() 
+                          + planner->getForceVariantWeight() / variance_val 
+                          + planner->getYawTorqueWeight() * planner->getMaxMinYaw();
+
+    if (planner->hasMomentCommand() && planner->getTargetJointIndex() >= 0) {
+        double current_tau = planner->computeExactInternalMoment(x, robot_model);
+        double diff = current_tau - planner->getTauDesTarget();
+        double w_tau = 3000.0;
         objective_base -= w_tau * (diff * diff); 
     }
 
