@@ -83,7 +83,7 @@ namespace
 
     robot_model->updateRobotModel(joint_positions);
 
-    // ====================================================================
+    // ======================================================gimbal_ctrl_pub_==============
     // ★ 【修正2】stabilityCheckを常にパスするようにfalseを挿入
     // ====================================================================
     if(false && !robot_model->stabilityCheck(planner->getPlanVerbose()))
@@ -193,7 +193,7 @@ void HydrusXiUnderActuatedNavigator::initialize(ros::NodeHandle nh, ros::NodeHan
 
   rosParamInit();
 
-  gimbal_ctrl_pub_ = nh_.advertise<sensor_msgs::JointState>("gimbals_ctrl", 1);
+  gimbal_ctrl_pub_ = nh_.advertise<sensor_msgs::JointState>("/hydrus_xi/gimbals_ctrl", 1);
 
   target_joint_index_ = -1;
   tau_des_target_ = 0.0;
