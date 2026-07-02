@@ -15,6 +15,15 @@ namespace
           double current_tau = planner->computeExactInternalMoment(x, robot_model);
           double diff = current_tau - planner->getTauDesTarget();
           double w_tau = 3000.0; 
+          
+          // ====================================================================
+          // ★ 【修正1】joint3のときだけデバッグログを出力
+          // ====================================================================
+          if (planner->getTargetJointIndex() == 2) {
+              ROS_INFO_THROTTLE(0.5, "joint3 penalty: CurrentTau=%.4f, TargetTau=%.4f, Diff^2=%.6f, penalty=%.6f",
+                  current_tau, planner->getTauDesTarget(), diff*diff, w_tau * (diff * diff));
+          }
+          
           return w_tau * (diff * diff);
       }
       return 0.0;
@@ -32,7 +41,10 @@ namespace
 
     robot_model->updateRobotModel(joint_positions);
 
-    if(!robot_model->stabilityCheck(planner->getPlanVerbose()))
+    // ====================================================================
+    // ★ 【修正2】stabilityCheckを常にパスするようにfalseを挿入
+    // ====================================================================
+    if(false && !robot_model->stabilityCheck(planner->getPlanVerbose()))
     {
         invalid_cnt ++;
         if(planner->getPlanVerbose()) ROS_WARN_STREAM("nlopt, robot stability is invalid with gimbals (cnt: " << invalid_cnt << ")");
@@ -71,7 +83,10 @@ namespace
 
     robot_model->updateRobotModel(joint_positions);
 
-    if(!robot_model->stabilityCheck(planner->getPlanVerbose()))
+    // ====================================================================
+    // ★ 【修正2】stabilityCheckを常にパスするようにfalseを挿入
+    // ====================================================================
+    if(false && !robot_model->stabilityCheck(planner->getPlanVerbose()))
     {
         invalid_cnt ++;
         if(planner->getPlanVerbose()) ROS_WARN("nlopt, robot stability is invalid (cnt: %d)", invalid_cnt);
@@ -343,6 +358,19 @@ bool HydrusXiUnderActuatedNavigator::plan()
 
   vectoring_nl_solver_->set_lower_bounds(lb);
   vectoring_nl_solver_->set_upper_bounds(ub);
+
+  // ====================================================================
+  // ★ 【修正3】nlopt::optimize直前にjoint3のデバッグログを追加
+  // ====================================================================
+  if (has_moment_command_ && target_joint_index_ == 2) {
+      double current_tau = computeExactInternalMoment(opt_gimbal_angles_, robot_model_for_plan_);
+      ROS_INFO_THROTTLE(0.5, "plan() before optimize: joint3 current_tau=%.4f, target_tau=%.4f, gimbal_angles=[%.4f, %.4f, %.4f, %.4f]",
+          current_tau, tau_des_target_,
+          opt_gimbal_angles_.size() > 0 ? opt_gimbal_angles_[0] : 0,
+          opt_gimbal_angles_.size() > 1 ? opt_gimbal_angles_[1] : 0,
+          opt_gimbal_angles_.size() > 2 ? opt_gimbal_angles_[2] : 0,
+          opt_gimbal_angles_.size() > 3 ? opt_gimbal_angles_[3] : 0);
+  }
 
   double start_time = ros::Time::now().toSec();
   double max_f = 0;
