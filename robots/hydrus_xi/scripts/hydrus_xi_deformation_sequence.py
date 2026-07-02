@@ -185,7 +185,7 @@ class HydrusXiDeformationSequencer:
         # 💡 トルクのベース値を大幅に強化
         P_GAIN = 0.2                # 変更前: 0.2 -> 1.0 (より強く引く)
         MAX_DRIVE_TORQUE_BASE = 0.15 # 変更前: 0.15 -> 0.3 (上限も解放)
-        MIN_FRICTION_TORQUE = 0.09  # ✨ 新規: 静止摩擦に打ち勝つための最低トルク
+        MIN_FRICTION_TORQUE = 0.1  # ✨ 新規: 静止摩擦に打ち勝つための最低トルク
 
         tau_des = P_GAIN * angle_diff_to_final
         remaining_angle = abs(angle_diff_to_final)
