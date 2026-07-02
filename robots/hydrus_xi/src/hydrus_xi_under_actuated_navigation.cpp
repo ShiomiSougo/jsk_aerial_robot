@@ -422,7 +422,7 @@ void HydrusXiUnderActuatedNavigator::rosParamInit()
   // ====================================================================
   baselink_rot_thresh_ = 0.08;  // 約14度までの機体の傾きを許容（元は 0.02）
   fc_t_min_thresh_ = 0.2;       // 安全マージンの最低要求を下げる（元は 2.0→0.5）
-  gimbal_delta_angle_ = 0.25;    // 1ステップでの最大ジンバル可動域を拡大（元は 0.2）
+  gimbal_delta_angle_ = 0.5;    // 1ステップでの最大ジンバル可動域を拡大（元は 0.2）
 }
 
 void HydrusXiUnderActuatedNavigator::momentCommandCallback(
