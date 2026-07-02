@@ -292,7 +292,83 @@ void HydrusXiUnderActuatedNavigator::threadFunc()
     }
 }
 
+bool HydrusXiUnderActuatedNavigator::plan()
+{
+  joint_positions_for_plan_ = robot_model_->getJointPositions();
 
+  if(joint_positions_for_plan_.rows() == 0) return false;
+
+  bool singular_form = true;
+  if(control_gimbal_indices_.size() == 0)
+    {
+      const auto& joint_names = robot_model_->getJointNames();
+      const auto& joint_indices = robot_model_->getJointIndices();
+
+      for(int i = 0; i < joint_names.size(); i++)
+        {
+          if(joint_names.at(i).find("joint") != std::string::npos)
+            {
+              if(fabs(joint_positions_for_plan_(joint_indices.at(i))) > 0.2) singular_form = false;
+            }
+        }
+
+      for(const auto& name: control_gimbal_names_)
+        control_gimbal_indices_.push_back(robot_model_->getJointIndexMap().at(name));
+    }
+
+  std::vector<double> lb(control_gimbal_indices_.size(), - M_PI);
+  std::vector<double> ub(control_gimbal_indices_.size(), M_PI);
+
+  if(opt_gimbal_angles_.size() != 0)
+    {
+      double delta_angle = gimbal_delta_angle_;
+
+      if(!robot_model_for_plan_->stabilityCheck(false))
+        {
+          delta_angle = M_PI;
+        }
+
+      // ========================================================
+      // ★ 追加（デバッグ＆強制解放用）: Joint 3 の時は探索範囲を全解放する
+      // ========================================================
+      if (has_moment_command_ && target_joint_index_ == 2) {
+          delta_angle = M_PI; // 探索範囲を無理やり最大まで広げる
+      }
+
+      // ログの大量出力を防ぐため 1.0秒に1回だけ出力
+      if (opt_gimbal_angles_.size() >= 3) {
+          ROS_INFO_THROTTLE(1.0, "[DEBUG NLOPT] TargetJoint: %d, delta_angle: %.2f, Gimbals: [%.3f, %.3f, %.3f]", 
+                            target_joint_index_, delta_angle, 
+                            opt_gimbal_angles_[0], opt_gimbal_angles_[1], opt_gimbal_angles_[2]);
+      }
+      // ========================================================
+
+      for(int i = 0; i < opt_gimbal_angles_.size(); i++)
+         {
+           lb.at(i) = opt_gimbal_angles_.at(i) - delta_angle;
+           ub.at(i) = opt_gimbal_angles_.at(i) + delta_angle;
+         }
+    }
+  else
+    {
+      opt_gimbal_angles_.resize(control_gimbal_indices_.size(), 0);
+
+      if(control_gimbal_indices_.size() == robot_model_->getRotorNum())
+        {
+          for(int i = 0; i < control_gimbal_indices_.size(); i++)
+            {
+              if(i%2 == 0) opt_gimbal_angles_.at(i) = M_PI;
+            }
+
+          if(singular_form && robot_model_->getRotorNum() == 4)
+            {
+              opt_gimbal_angles_.at(0) = M_PI / 2;
+              opt_gimbal_angles_.at(1) = - M_PI / 2;
+              opt_gimbal_angles_.at(2) = - M_PI / 2;
+              opt_gimbal_angles_.at(3) = M_PI / 2;
+            }
+        }
+    }
 
   vectoring_nl_solver_->set_lower_bounds(lb);
   vectoring_nl_solver_->set_upper_bounds(ub);
