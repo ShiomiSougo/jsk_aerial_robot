@@ -328,21 +328,6 @@ bool HydrusXiUnderActuatedNavigator::plan()
           delta_angle = M_PI;
         }
 
-      // ========================================================
-      // ★ 追加（デバッグ＆強制解放用）: Joint 3 の時は探索範囲を全解放する
-      // ========================================================
-      if (has_moment_command_ && target_joint_index_ == 2) {
-          delta_angle = M_PI; // 探索範囲を無理やり最大まで広げる
-      }
-
-      // ログの大量出力を防ぐため 1.0秒に1回だけ出力
-      if (opt_gimbal_angles_.size() >= 3) {
-          ROS_INFO_THROTTLE(1.0, "[DEBUG NLOPT] TargetJoint: %d, delta_angle: %.2f, Gimbals: [%.3f, %.3f, %.3f]", 
-                            target_joint_index_, delta_angle, 
-                            opt_gimbal_angles_[0], opt_gimbal_angles_[1], opt_gimbal_angles_[2]);
-      }
-      // ========================================================
-
       for(int i = 0; i < opt_gimbal_angles_.size(); i++)
          {
            lb.at(i) = opt_gimbal_angles_.at(i) - delta_angle;
