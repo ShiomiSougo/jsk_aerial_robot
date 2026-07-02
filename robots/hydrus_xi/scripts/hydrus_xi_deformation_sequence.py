@@ -182,12 +182,22 @@ class HydrusXiDeformationSequencer:
     def _calculate_target_moment(self, joint_name):
         angle_diff_to_final = self._get_angle_difference(self.current_q[joint_name], self.target_q[joint_name])
         
-        P_GAIN = 0.1
-        MAX_DRIVE_TORQUE_BASE = 0.15
+        # 💡 トルクのベース値を大幅に強化
+        P_GAIN = 0.2                # 変更前: 0.2 -> 1.0 (より強く引く)
+        MAX_DRIVE_TORQUE_BASE = 0.15 # 変更前: 0.15 -> 0.3 (上限も解放)
+        MIN_FRICTION_TORQUE = 0.09  # ✨ 新規: 静止摩擦に打ち勝つための最低トルク
+
         tau_des = P_GAIN * angle_diff_to_final
         remaining_angle = abs(angle_diff_to_final)
         
-        DECEL_ZONE = 0.025 
+        # 💡 摩擦補償：誤差が閾値以上あるのにトルクが小さすぎる場合は底上げする
+        if remaining_angle > ANGLE_ERROR_THRESHOLD:
+            if tau_des > 0 and tau_des < MIN_FRICTION_TORQUE:
+                tau_des = MIN_FRICTION_TORQUE
+            elif tau_des < 0 and tau_des > -MIN_FRICTION_TORQUE:
+                tau_des = -MIN_FRICTION_TORQUE
+
+        DECEL_ZONE = 0.05 # 変更前: 0.025 -> 少し早めに減速を始める
         
         if remaining_angle < DECEL_ZONE:
             fade_factor = remaining_angle / DECEL_ZONE
