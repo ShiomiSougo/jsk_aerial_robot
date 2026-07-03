@@ -333,6 +333,15 @@ bool HydrusXiUnderActuatedNavigator::plan()
     {
       double delta_angle = gimbal_delta_angle_;
 
+      // ====================================================================
+      // 【修正案】delta_angle を joint3 の時だけ大きくする
+      // ====================================================================
+      // joint3 の時は、もっとダイナミックに動かせるように制限を緩和
+      if (target_joint_index_ == 2)
+        {
+          delta_angle = 1.0; // 例えば 1.0ラジアン分動けるようにする
+        }
+
       if(!robot_model_for_plan_->stabilityCheck(false))
         {
           delta_angle = M_PI;
