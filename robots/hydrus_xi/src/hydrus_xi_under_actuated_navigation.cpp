@@ -1,5 +1,6 @@
 #include <hydrus_xi/hydrus_xi_under_actuated_navigation.h>
 #include <std_msgs/Float64MultiArray.h>
+#include <std_msgs/Float64.h>
 
 using namespace aerial_robot_navigation;
 
@@ -193,8 +194,6 @@ void HydrusXiUnderActuatedNavigator::initialize(ros::NodeHandle nh, ros::NodeHan
 
   rosParamInit();
 
-  gimbal_ctrl_pub_ = nh_.advertise<sensor_msgs::JointState>("/hydrus_xi/gimbals_ctrl", 1);
-
   target_joint_index_ = -1;
   tau_des_target_ = 0.0;
   has_moment_command_ = false;
@@ -219,6 +218,16 @@ void HydrusXiUnderActuatedNavigator::initialize(ros::NodeHandle nh, ros::NodeHan
               control_gimbal_names_.push_back(name);
             }
         }
+    }
+
+  // ====================================================================
+  // ★ 【修正1】各ジンバルごとに個別のPublisherを用意する
+  // ====================================================================
+  gimbal_ctrl_pubs_.resize(control_gimbal_names_.size());
+  for(int i = 0; i < control_gimbal_names_.size(); i++)
+    {
+      std::string topic = "/hydrus_xi/servo_controller/gimbals/controller" + std::to_string(i+1) + "/simulation/command";
+      gimbal_ctrl_pubs_[i] = nh_.advertise<std_msgs::Float64>(topic, 1);
     }
 
   vectoring_nl_solver_ = boost::make_shared<nlopt::opt>(nlopt::LN_COBYLA, control_gimbal_names_.size());
@@ -402,15 +411,18 @@ bool HydrusXiUnderActuatedNavigator::plan()
       std::cout << "nlopt failed: " << e.what() << std::endl;
     }
 
-  sensor_msgs::JointState gimbal_msg;
-  gimbal_msg.header.stamp = ros::Time::now();
-
+  // ====================================================================
+  // ★ 【修正2】各ジンバルごとのPublisherへ個別にFloat64を送信
+  // ====================================================================
   for(int i = 0; i < control_gimbal_indices_.size(); i++)
     {
-      gimbal_msg.name.push_back(control_gimbal_names_.at(i));
-      gimbal_msg.position.push_back(opt_gimbal_angles_.at(i));
+      std_msgs::Float64 msg;
+      msg.data = opt_gimbal_angles_.at(i);
+      if (i < gimbal_ctrl_pubs_.size())
+        {
+          gimbal_ctrl_pubs_[i].publish(msg);
+        }
     }
-  gimbal_ctrl_pub_.publish(gimbal_msg);
 
   prev_opt_gimbal_angles_ = opt_gimbal_angles_;
 
