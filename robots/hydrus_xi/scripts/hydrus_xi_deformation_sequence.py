@@ -198,8 +198,8 @@ class HydrusXiDeformationSequencer:
         #        静止摩擦を破れず動き出せなかったため、Joint 3のみトルク上限・
         #        摩擦補償の下限値を引き上げる（プリロードで到達実績のある0.30Nmに合わせる）
         if joint_name == 'joint3':
-            MAX_DRIVE_TORQUE_BASE = 0.30
-            MIN_FRICTION_TORQUE = 0.20
+            MAX_DRIVE_TORQUE_BASE = 0.18
+            MIN_FRICTION_TORQUE = 0.12
             P_GAIN = 0.3  # ★追加: 共通のP_GAIN=0.2では角度誤差が大きくても上限0.30Nmに到達しないため引き上げ
 
         tau_des = P_GAIN * angle_diff_to_final
