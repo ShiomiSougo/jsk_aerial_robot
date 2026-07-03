@@ -3,7 +3,7 @@
 
 """
 Hydrus-Xi 連続変形シーケンス実行スクリプト（サラサラURDF・安全ソフトランディング版）
-変形順序変更版: Joint 1 (空力) ➔ Joint 2 (サーボ) ➔ Joint 3 (空力)
+変形順序変更版: Joint 3 (空力) ➔ Joint 2 (サーボ) ➔ Joint 1 (空力)
 
 使用例:
   python hydrus_xi_deformation_sequence.py -0.3 1.0 -0.3
@@ -113,7 +113,7 @@ class HydrusXiDeformationSequencer:
         self._send_synchronized_command()
         rospy.loginfo("[HydrusXiSequencer] 🟩 コントローラとの接続が確立。初期姿勢維持コマンドを送信しました。")
 
-        rospy.loginfo("[HydrusXiSequencer] Initialized: q1=%.3f, q2=%.3f, q3=%.3f (1->2->3 Sequence Mode)", target_q1, target_q2, target_q3)
+        rospy.loginfo("[HydrusXiSequencer] Initialized: q1=%.3f, q2=%.3f, q3=%.3f (3->2->1 Sequence Mode)", target_q1, target_q2, target_q3)
         self.loop_timer = rospy.Timer(rospy.Duration(DT), self._control_loop)
         
     def _switch_joint_controller(self, joint_key, action):
@@ -236,12 +236,12 @@ class HydrusXiDeformationSequencer:
         vel_sum = abs(self.current_dq['joint1']) + abs(self.current_dq['joint2']) + abs(self.current_dq['joint3'])
         
         if (rospy.Time.now() - self.step_start_time).to_sec() >= 5.0 and vel_sum < 0.005:
-            rospy.loginfo("[HydrusXiSequencer] 初期静止完了 ➔ Step 1へ移行")
-            self.current_step = SequenceStep.JOINT1_3_PRETENSION  
+            rospy.loginfo("[HydrusXiSequencer] 初期静止完了 ➔ Step 1へ移行 (Joint 3 プリロード)")
+            self.current_step = SequenceStep.JOINT3_PRETENSION  
             self.step_start_time = rospy.Time.now()
         elif (rospy.Time.now() - self.step_start_time).to_sec() > 10.0:
             rospy.logwarn("[HydrusXiSequencer] 初期静止タイムアウト、強行移行")
-            self.current_step = SequenceStep.JOINT1_3_PRETENSION  
+            self.current_step = SequenceStep.JOINT3_PRETENSION  
             self.step_start_time = rospy.Time.now()
 
     def _step_joints_pretension(self):
@@ -298,9 +298,9 @@ class HydrusXiDeformationSequencer:
         MIN_WAIT = 5.0
         if duration >= MIN_WAIT:
             if self.stabilize_loop_count >= STABILIZE_REQUIRED_LOOPS or duration >= STABILIZE_TIMEOUT:
-                # ⭕ 【順序変更】次は Joint 2 (位置制御) なので、ここでは controller3 ではなく何もしないで次へ
-                rospy.loginfo("[HydrusXiSequencer] Joint 1 静定完了 ➔ Step 4 (Joint 2 Servo開始)")
-                self.current_step = SequenceStep.JOINT2_SERVO
+                # ⭕ 【順序変更】最後の関節なので、判定パス後はシーケンス終了(COMPLETE)へ
+                rospy.loginfo("[HydrusXiSequencer] Joint 1 静定完了 ➔ Step 9 (シーケンス完了)")
+                self.current_step = SequenceStep.COMPLETE
                 self.step_start_time = rospy.Time.now()
 
     def _step_joint2_servo(self):
@@ -346,14 +346,14 @@ class HydrusXiDeformationSequencer:
         else:
             self.stabilize_loop_count = 0
 
-        # しっかりと3秒姿勢を落ち着かせたあと、満を持して Joint 3 のプリロードへ移行する
+        # しっかりと3秒姿勢を落ち着かせたあと、満を持して Joint 1 のプリロードへ移行する
         MIN_WAIT_J2 = 5.0
         if duration >= MIN_WAIT_J2:
             if self.stabilize_loop_count >= STABILIZE_REQUIRED_LOOPS or duration >= STABILIZE_TIMEOUT:
-                # ★変更: ここで直接 controller3 を stop するのではなく、
-                #        Joint 1 と対称なプリロードステップを挟んでから停止する
-                rospy.loginfo("[HydrusXiSequencer] Joint 2 静定完了（バランス確保） ➔ Step 6 (Joint 3 プリロード開始)")
-                self.current_step = SequenceStep.JOINT3_PRETENSION
+                # ★変更: ここで直接 controller1 を stop するのではなく、
+                #        Joint 3 と対称なプリロードステップを挟んでから停止する
+                rospy.loginfo("[HydrusXiSequencer] Joint 2 静定完了（バランス確保） ➔ Step 6 (Joint 1 プリロード開始)")
+                self.current_step = SequenceStep.JOINT1_3_PRETENSION
                 self.step_start_time = rospy.Time.now()
 
     def _step_joint3_pretension(self):
@@ -409,12 +409,12 @@ class HydrusXiDeformationSequencer:
             else:
                 self.stabilize_loop_count = 0
             
-        # ⭕ 【順序変更】最後の関節なので、判定パス後はシーケンス終了(COMPLETE)へ
+        # ⭕ 【順序変更】最初の関節なので、静定完了後は Joint 2 (サーボ) へ移行
         MIN_WAIT_J3 = 3.0
         if duration >= MIN_WAIT_J3:
             if self.stabilize_loop_count >= STABILIZE_REQUIRED_LOOPS or duration >= STABILIZE_TIMEOUT:
-                rospy.loginfo("[HydrusXiSequencer] Joint 3 静定完了 ➔ Step 9 (シーケンス完了)")
-                self.current_step = SequenceStep.COMPLETE
+                rospy.loginfo("[HydrusXiSequencer] Joint 3 静定完了 ➔ Step 4 (Joint 2 Servo開始)")
+                self.current_step = SequenceStep.JOINT2_SERVO
                 self.step_start_time = rospy.Time.now()
 
     def _step_complete(self):
@@ -460,7 +460,7 @@ def main():
     while not rospy.is_shutdown():
         if sequencer.current_step == SequenceStep.COMPLETE:
             print("\n" + "="*60)
-            print(" ✨ 【Hydrus-Xi】ROS Control 動的スイッチ変形システム（1->2->3並替版）")
+            print(" ✨ 【Hydrus-Xi】ROS Control 動的スイッチ変形システム（3->2->1並替版）")
             print(" 次の目標関節角度 [q1 q2 q3] を入力してください。")
             print("="*60)
             try:
