@@ -504,7 +504,18 @@ double HydrusXiUnderActuatedNavigator::computeExactInternalMoment(
   Eigen::Vector3d P_joint = P_L[target_joint_index_ + 1];
   double tau_internal = 0.0;
 
-  for (int i = target_joint_index_ + 1; i < num_rotors; ++i) {
+  // ★変更: 従来はdownstream側（target_jointより先端側）のロータのみを常に使っていたため、
+  //        Joint 3のようにdownstream側がロータ1基しかない関節では非力になっていた。
+  //        Joint 2を境にロータ数が多い側（joint2に近い側）を自動選択することで、
+  //        Joint 1・Joint 3ともに3基分の自由度を使えるよう対称化する。
+  int upstream_count = target_joint_index_ + 1;              // ベース側（rotor 0..target_joint_index_）の基数
+  int downstream_count = num_rotors - upstream_count;         // 先端側（rotor target_joint_index_+1..end）の基数
+  bool use_upstream = (upstream_count > downstream_count);    // 台数が多い側を採用
+
+  int loop_start = use_upstream ? 0 : (target_joint_index_ + 1);
+  int loop_end   = use_upstream ? (target_joint_index_ + 1) : num_rotors;
+
+  for (int i = loop_start; i < loop_end; ++i) {
     
     Eigen::Vector3d P_rot = P_L[i] + Eigen::Vector3d(dx * std::cos(theta[i]), dx * std::sin(theta[i]), 0.0);
     Eigen::Vector3d r = P_rot - P_joint; 
@@ -528,6 +539,11 @@ double HydrusXiUnderActuatedNavigator::computeExactInternalMoment(
     double torque_from_force = r.x() * Fy_world - r.y() * Fx_world;
     tau_internal += (torque_from_force + mz_local);
   }
+
+  // ★追加: upstream側（ベース側）で計算した場合、作用・反作用の関係でdownstream側基準と
+  //        符号が逆になるため反転する。要検証: 実機/シムでJoint 3のDiffとTauの符号が
+  //        意図した方向に一致しているか必ず確認すること。
+  if (use_upstream) tau_internal = -tau_internal;
 
   return tau_internal;
 }
