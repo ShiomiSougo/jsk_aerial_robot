@@ -194,6 +194,13 @@ class HydrusXiDeformationSequencer:
         MAX_DRIVE_TORQUE_BASE = 0.18 # 変更前: 0.15 -> 0.3 (上限も解放)
         MIN_FRICTION_TORQUE = 0.12  # ✨ 新規: 静止摩擦に打ち勝つための最低トルク
 
+        # ★追加: Joint 3はロータ1基分の推力しか使えず、Joint 1と同じ0.18Nmでは
+        #        静止摩擦を破れず動き出せなかったため、Joint 3のみトルク上限・
+        #        摩擦補償の下限値を引き上げる（プリロードで到達実績のある0.30Nmに合わせる）
+        if joint_name == 'joint3':
+            MAX_DRIVE_TORQUE_BASE = 0.30
+            MIN_FRICTION_TORQUE = 0.20
+
         tau_des = P_GAIN * angle_diff_to_final
         remaining_angle = abs(angle_diff_to_final)
         
