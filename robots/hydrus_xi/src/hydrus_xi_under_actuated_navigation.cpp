@@ -421,12 +421,17 @@ bool HydrusXiUnderActuatedNavigator::plan()
     }
 
   // ====================================================================
-  // ★ 【修正2】各ジンバルごとのPublisherへ個別にFloat64を送信
+  // ★ 最終デバッグ：Publish直前に強制ログ出力
   // ====================================================================
   for(int i = 0; i < control_gimbal_indices_.size(); i++)
     {
       std_msgs::Float64 msg;
       msg.data = opt_gimbal_angles_.at(i);
+
+      // ここで確実にログを出す
+      if (target_joint_index_ == 2) {
+          ROS_WARN("DEBUG: [Joint3 Phase] Sending %f to Gimbal_Index[%d]", msg.data, control_gimbal_indices_[i]);
+      }
       if (i < gimbal_ctrl_pubs_.size())
         {
           gimbal_ctrl_pubs_[i].publish(msg);
