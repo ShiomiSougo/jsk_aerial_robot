@@ -200,6 +200,7 @@ class HydrusXiDeformationSequencer:
         if joint_name == 'joint3':
             MAX_DRIVE_TORQUE_BASE = 0.30
             MIN_FRICTION_TORQUE = 0.20
+            P_GAIN = 0.3  # ★追加: 共通のP_GAIN=0.2では角度誤差が大きくても上限0.30Nmに到達しないため引き上げ
 
         tau_des = P_GAIN * angle_diff_to_final
         remaining_angle = abs(angle_diff_to_final)
@@ -424,11 +425,8 @@ class HydrusXiDeformationSequencer:
             rospy.loginfo("[HydrusXiSequencer] 🎉 全空力・サーボ複合連続変形シーケンスが正常に完走しました！")
 
     def _control_loop(self, event):
-        def _control_loop(self, event):
         # ログ出力の追加（動作確認用）
-            rospy.loginfo_throttle(1.0, "[DEBUG] Current Step: %s, Stabilize Count: %d" % (self.current_step, self.stabilize_loop_count))
-        
-        
+        rospy.loginfo_throttle(1.0, "[DEBUG] Current Step: %s, Stabilize Count: %d" % (self.current_step, self.stabilize_loop_count))
         try:
             current_time = rospy.Time.now()
             if current_time.is_zero(): return

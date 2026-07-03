@@ -245,12 +245,8 @@ void HydrusXiUnderActuatedNavigator::initialize(ros::NodeHandle nh, ros::NodeHan
   
   // ====================================================================
   // ★ 調整ポイント：最大計算回数を制限して30秒フリーズを防ぐ
-  // ★変更: 50では特にJoint3（ロータ1基・短いレバーアーム）で収束が安定せず、
-  //        トルクが周期的にゼロ・逆転してjointが動かない事象を確認したため引き上げを試みたが、
-  //        250では1回のplan()計算が重くなりすぎてJoint1側の制御まで巻き込んで機能しなくなったため、
-  //        100に下げてリアルタイム性と収束安定性のバランスを再調整する
   // ====================================================================
-  vectoring_nl_solver_->set_maxeval(100); // 元の1000 → 50 → 250 を経て100に調整
+  vectoring_nl_solver_->set_maxeval(50); // 元の1000から50〜100程度に制限してリアルタイム性を確保
 
   double rotor_num = robot_model->getRotorNum();
 
@@ -504,18 +500,7 @@ double HydrusXiUnderActuatedNavigator::computeExactInternalMoment(
   Eigen::Vector3d P_joint = P_L[target_joint_index_ + 1];
   double tau_internal = 0.0;
 
-  // ★変更: 従来はdownstream側（target_jointより先端側）のロータのみを常に使っていたため、
-  //        Joint 3のようにdownstream側がロータ1基しかない関節では非力になっていた。
-  //        Joint 2を境にロータ数が多い側（joint2に近い側）を自動選択することで、
-  //        Joint 1・Joint 3ともに3基分の自由度を使えるよう対称化する。
-  int upstream_count = target_joint_index_ + 1;              // ベース側（rotor 0..target_joint_index_）の基数
-  int downstream_count = num_rotors - upstream_count;         // 先端側（rotor target_joint_index_+1..end）の基数
-  bool use_upstream = (upstream_count > downstream_count);    // 台数が多い側を採用
-
-  int loop_start = use_upstream ? 0 : (target_joint_index_ + 1);
-  int loop_end   = use_upstream ? (target_joint_index_ + 1) : num_rotors;
-
-  for (int i = loop_start; i < loop_end; ++i) {
+  for (int i = target_joint_index_ + 1; i < num_rotors; ++i) {
     
     Eigen::Vector3d P_rot = P_L[i] + Eigen::Vector3d(dx * std::cos(theta[i]), dx * std::sin(theta[i]), 0.0);
     Eigen::Vector3d r = P_rot - P_joint; 
@@ -539,11 +524,6 @@ double HydrusXiUnderActuatedNavigator::computeExactInternalMoment(
     double torque_from_force = r.x() * Fy_world - r.y() * Fx_world;
     tau_internal += (torque_from_force + mz_local);
   }
-
-  // ★追加: upstream側（ベース側）で計算した場合、作用・反作用の関係でdownstream側基準と
-  //        符号が逆になるため反転する。要検証: 実機/シムでJoint 3のDiffとTauの符号が
-  //        意図した方向に一致しているか必ず確認すること。
-  if (use_upstream) tau_internal = -tau_internal;
 
   return tau_internal;
 }
