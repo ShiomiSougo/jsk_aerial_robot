@@ -245,8 +245,11 @@ void HydrusXiUnderActuatedNavigator::initialize(ros::NodeHandle nh, ros::NodeHan
   
   // ====================================================================
   // ★ 調整ポイント：最大計算回数を制限して30秒フリーズを防ぐ
+  // ★変更: 50では特にJoint3（ロータ1基・短いレバーアーム）で収束が安定せず、
+  //        トルクが周期的にゼロ・逆転してjointが動かない事象を確認したため、
+  //        250に引き上げてリアルタイム性と収束安定性のバランスを取る
   // ====================================================================
-  vectoring_nl_solver_->set_maxeval(50); // 元の1000から50〜100程度に制限してリアルタイム性を確保
+  vectoring_nl_solver_->set_maxeval(250); // 元の1000から50を経て250に調整
 
   double rotor_num = robot_model->getRotorNum();
 
