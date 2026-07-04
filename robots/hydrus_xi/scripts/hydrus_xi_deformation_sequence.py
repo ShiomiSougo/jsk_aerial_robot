@@ -41,7 +41,7 @@ STABILIZE_TIMEOUT = 4.0           # タイムアウト時間 [s]
 
 # 物理的な予張力パラメータ
 PRELOAD_TORQUE = 0.40             # 💡 サラサラ関節に合わせてプリロードも優しく [Nm]（Joint 1用）
-PRELOAD_TORQUE_JOINT3 = 0.30      # ★変更: 0.20では静止摩擦を崩しきれずjoint3が動かなかったため引き上げ
+PRELOAD_TORQUE_JOINT3 = 0.40      # ★変更: 0.20では静止摩擦を崩しきれずjoint3が動かなかったため引き上げ
                                    #        Joint 1はロータ1基分しかトルクを生成できず、
                                    #        Joint 1と同じ0.40Nmを要求すると他ロータのバランス補正が
                                    #        Joint 1側のPID保持力を上回り、Joint 1が元の位置に戻ってしまうため
