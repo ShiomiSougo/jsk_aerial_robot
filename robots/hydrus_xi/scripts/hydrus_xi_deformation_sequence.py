@@ -41,7 +41,7 @@ STABILIZE_TIMEOUT = 4.0           # タイムアウト時間 [s]
 
 # 物理的な予張力パラメータ
 PRELOAD_TORQUE = 0.40             # 💡 サラサラ関節に合わせてプリロードも優しく [Nm]（Joint 1用）
-PRELOAD_TORQUE_JOINT3 = 0.45      # ★変更: 0.20では静止摩擦を崩しきれずjoint3が動かなかったため引き上げ
+PRELOAD_TORQUE_JOINT3 = 0.8      # ★変更: 0.20では静止摩擦を崩しきれずjoint3が動かなかったため引き上げ
                                    #        Joint 1はロータ1基分しかトルクを生成できず、
                                    #        Joint 1と同じ0.40Nmを要求すると他ロータのバランス補正が
                                    #        Joint 1側のPID保持力を上回り、Joint 1が元の位置に戻ってしまうため
@@ -198,8 +198,8 @@ class HydrusXiDeformationSequencer:
         #        静止摩擦を破れず動き出せなかったため、Joint 3のみトルク上限・
         #        摩擦補償の下限値を引き上げる（プリロードで到達実績のある0.30Nmに合わせる）
         if joint_name == 'joint3':
-            MAX_DRIVE_TORQUE_BASE = 0.25
-            MIN_FRICTION_TORQUE = 0.12
+            MAX_DRIVE_TORQUE_BASE = 0.4
+            MIN_FRICTION_TORQUE = 0.2
             P_GAIN = 0.3  # ★追加: 共通のP_GAIN=0.2では角度誤差が大きくても上限0.30Nmに到達しないため引き上げ
 
         tau_des = P_GAIN * angle_diff_to_final
