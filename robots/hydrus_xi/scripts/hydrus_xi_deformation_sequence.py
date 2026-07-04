@@ -379,6 +379,7 @@ class HydrusXiDeformationSequencer:
         self._send_synchronized_command()
         
         tau_des = self._calculate_target_moment('joint3')
+        tau_des = -tau_des# Joint 3 は Joint 1 と逆方向に動くため、トルク符号を反転
         rospy.loginfo_throttle(1.0, f"[DEBUG] Joint 3 Deform: Diff={self._get_angle_difference(self.current_q['joint3'], self.target_q['joint3']):.4f}, Tau={tau_des:.4f}")
         self._send_internal_moment_command(2, tau_des)
         
