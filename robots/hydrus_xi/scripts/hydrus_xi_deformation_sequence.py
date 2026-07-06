@@ -35,8 +35,19 @@ STABILIZE_VELOCITY_THRESH = 0.01  # 静定角速度閾値 [rad/s]
 STABILIZE_REQUIRED_LOOPS = 10     # 収束ループ数
 STABILIZE_TIMEOUT = 4.0           # タイムアウト時間 [s]
 
-# 物理的な予張力パラメータ
-PRELOAD_TORQUE = 0.40             # Joint 1用
+# 動き出しキック用パラメータ（逆向きプリロード廃止 → 目標方向キックへ置換）
+KICK_TORQUE = 0.40                # 静止摩擦を破るためのキックトルク [Nm]（目標方向）
+KICK_EXIT_DQ = 0.10               # この角速度[rad/s]を超えたら「動き出した」と判定しキック終了
+KICK_TIMEOUT = 0.6                # キックの最大継続時間 [s]（空振り時のフェイルセーフ）
+
+# Joint1 可動域リミット（安全ガード用。実機/URDFの値に合わせて調整）
+JOINT1_LIMIT = 1.57               # [rad] ±π/2 と仮定
+JOINT1_LIMIT_MARGIN = 0.08        # リミットとみなすマージン [rad]
+
+# deform フェーズ全体の安全タイムアウト [s]
+DEFORM_TIMEOUT = 12.0
+# 「逆走／停止で残角が縮まらない」を異常とみなす連続ループ数
+DEFORM_STALL_LOOPS = 20
 
 # ★検証用パラメータ
 RELEASE_PROBE_DURATION = 0.5      # リリース後に dq をサンプリングする時間 [s]
@@ -91,6 +102,12 @@ class HydrusXiDeformationSequencer:
         self._probe_peak_dq = 0.0          # 観測窓中に見た最大|dq|（符号付き）
         self._probe_first_dq_sign = '0'    # 最初に閾値を超えた向き
         self._release_info = {}            # リリース時点のスナップショット
+        self._deform_log_counter = 0
+
+        # ★キック相・安全ガードの状態
+        self._kick_active = False          # 動き出しキック中フラグ
+        self._kick_start_time = None
+        self._deform_stall_count = 0       # 逆走/停止の連続カウント
         
         # サービスクライアントの初期化
         rospy.wait_for_service('/hydrus_xi/controller_manager/switch_controller')
@@ -295,20 +312,15 @@ class HydrusXiDeformationSequencer:
             self.step_start_time = rospy.Time.now()
 
     def _step_joint1_pretension(self):
+        # 逆向きプリロードは廃止。この相では姿勢を保持し、内部モーメントは与えない。
+        # （動き出しのキックは deform 相の入口で「目標方向」に行う）
         self.joint_targets['joint1'] = self.current_q['joint1']
         self._send_synchronized_command()
-        
+        self._send_internal_moment_command(0, 0.0)
+
         elapsed = (rospy.Time.now() - self.step_start_time).to_sec()
         duration = STEP_DURATIONS[SequenceStep.JOINT1_PRETENSION]
-        progress = min(1.0, elapsed / duration)
-        
-        # ★プリロード（予張力）の方向を変形方向（angle_diff）と【逆】にする
-        angle_diff = self._get_angle_difference(self.current_q['joint1'], self.target_q['joint1'])
-        direction = -1.0 if angle_diff >= 0 else 1.0
-        
-        current_preload = PRELOAD_TORQUE * progress * direction
-        self._send_internal_moment_command(0, current_preload)
-        
+
         if elapsed >= duration:
             # ★リリース時点のスナップショットを保存（検証用）
             final_angle_diff = self._get_angle_difference(self.current_q['joint1'], self.target_q['joint1'])
@@ -319,11 +331,11 @@ class HydrusXiDeformationSequencer:
                 'q2': self.current_q['joint2'],
                 'q3': self.current_q['joint3'],
                 'desired_sign': _sign_str(final_angle_diff),   # 目標へ向かうべき向き
-                'preload_sign': _sign_str(direction),           # 実際にプリロードした向き
+                'preload_sign': '0',                            # プリロード廃止
             }
 
             if self._switch_joint_controller('joint1', 'stop'):
-                rospy.loginfo("[HydrusXiSequencer] Step 1 Completed ➔ Step 2 (Joint 1 純空力変形開始)")
+                rospy.loginfo("[HydrusXiSequencer] Step 1 Completed ➔ Step 2 (Joint 1 純空力変形開始 / 目標方向キック)")
                 # ★リリース直後の観測窓を開始
                 self._probe_active = True
                 self._probe_start_time = rospy.Time.now()
@@ -334,42 +346,102 @@ class HydrusXiDeformationSequencer:
                 # ★deform トルク観測用のログ間引きカウンタ
                 self._deform_log_counter = 0
 
+                # ★キック相の状態を初期化
+                self._kick_active = True
+                self._kick_start_time = rospy.Time.now()
+                self._deform_stall_count = 0
+
                 self.current_step = SequenceStep.JOINT1_DEFORM
                 self.step_start_time = rospy.Time.now()
 
     def _step_joint1_deform(self):
-        self.joint_targets['joint1'] = self.current_q['joint1'] 
+        self.joint_targets['joint1'] = self.current_q['joint1']
         self._send_synchronized_command()
 
         # ★リリース直後の初速観測（変形トルクとは独立に走る）
         self._update_release_probe()
-        
-        tau_des = self._calculate_target_moment_joint1()
+
+        angle_diff = self._get_angle_difference(self.current_q['joint1'], self.target_q['joint1'])
+        remaining = abs(angle_diff)
+        dq1 = self.current_dq['joint1']
+        deform_elapsed = (rospy.Time.now() - self.step_start_time).to_sec()
+
+        # --- 到達判定（最優先。キック中でも到達したら即完了） ---
+        if remaining <= ANGLE_ERROR_THRESHOLD:
+            self._finish_deform(reason="到達")
+            return
+
+        # --- 目標方向（angle_diff の符号）を全フェーズ共通の駆動向きにする ---
+        target_dir = 1.0 if angle_diff >= 0 else -1.0
+
+        if self._kick_active:
+            # === キック相：静止摩擦を破るまで目標方向へ強トルク ===
+            kick_elapsed = (rospy.Time.now() - self._kick_start_time).to_sec()
+            tau_des = KICK_TORQUE * target_dir
+            phase = "KICK"
+
+            # 動き出した、またはキックタイムアウトで通常相へ
+            if abs(dq1) >= KICK_EXIT_DQ:
+                self._kick_active = False
+                rospy.loginfo("[HydrusXiSequencer] 動き出し検出 (dq1=%.3f) ➔ 通常変形トルクへ", dq1)
+            elif kick_elapsed >= KICK_TIMEOUT:
+                self._kick_active = False
+                rospy.logwarn("[HydrusXiSequencer] キックタイムアウト (%.2fs) ➔ 通常変形トルクへ移行", kick_elapsed)
+        else:
+            # === 通常相：P制御＋摩擦フロア＋減速帯（既存ロジック） ===
+            tau_des = self._calculate_target_moment_joint1()
+            phase = "DRIVE"
+
         self._send_internal_moment_command(0, tau_des)
 
-        # ★deform 中の指令トルク内訳を約0.25秒おきに出力（摩擦フロアが効いているか確認用）
+        # --- 安全ガード：逆走／リミット張り付きで残角が縮まらない状態を検知 ---
+        near_limit = abs(self.current_q['joint1']) >= (JOINT1_LIMIT - JOINT1_LIMIT_MARGIN)
+        moving_wrong_way = (dq1 * target_dir) < -STABILIZE_VELOCITY_THRESH  # 目標と逆へ有意に動く
+        stalled_at_limit = near_limit and abs(dq1) < STABILIZE_VELOCITY_THRESH
+
+        if not self._kick_active and (moving_wrong_way or stalled_at_limit):
+            self._deform_stall_count += 1
+        else:
+            self._deform_stall_count = 0
+
+        # --- ログ（約0.25秒おき） ---
         self._deform_log_counter += 1
-        if self._deform_log_counter % 5 == 0:  # 20Hz -> 約4Hz
-            angle_diff_dbg = self._get_angle_difference(self.current_q['joint1'], self.target_q['joint1'])
-            raw_p = 0.2 * angle_diff_dbg  # フロア適用前の生P制御値（P_GAIN=0.2）
-            floor_active = abs(raw_p) < 0.12 and abs(angle_diff_dbg) > ANGLE_ERROR_THRESHOLD
+        if self._deform_log_counter % 5 == 0:
             rospy.loginfo(
-                "[DEFORM] run#%d 残角=%.3f | 生P=%.4f | 指令tau=%.4f | フロア効=%s | 実dq1=%.4f | q1=%.3f",
-                self.run_index, angle_diff_dbg, raw_p, tau_des,
-                ("YES(->±0.12)" if floor_active else "no"),
-                self.current_dq['joint1'], self.current_q['joint1']
+                "[DEFORM] run#%d [%s] 残角=%.3f | 指令tau=%.4f | 実dq1=%.4f | q1=%.3f | stall=%d",
+                self.run_index, phase, angle_diff, tau_des, dq1,
+                self.current_q['joint1'], self._deform_stall_count
             )
-        
-        if abs(self._get_angle_difference(self.current_q['joint1'], self.target_q['joint1'])) <= ANGLE_ERROR_THRESHOLD:
-            self._send_internal_moment_command(0, 0.0)
-            self.joint_targets['joint1'] = self.current_q['joint1']
-            self._send_synchronized_command()
-            
-            if self._switch_joint_controller('joint1', 'start'):
-                rospy.loginfo("[HydrusXiSequencer] Joint 1 変形完了 ➔ Step 3 (Joint 1 静定待ち)")
-                self.stabilize_loop_count = 0
-                self.current_step = SequenceStep.JOINT1_STABILIZE
-                self.step_start_time = rospy.Time.now()
+
+        # --- 脱出条件（デモが固まらないためのフェイルセーフ） ---
+        if self._deform_stall_count >= DEFORM_STALL_LOOPS:
+            rospy.logerr(
+                "[HydrusXiSequencer] ⚠️ Joint1 変形が停滞（逆走/リミット張り付き）。安全停止して次相へ。残角=%.3f q1=%.3f",
+                angle_diff, self.current_q['joint1']
+            )
+            self._finish_deform(reason="停滞ガード")
+            return
+
+        if deform_elapsed >= DEFORM_TIMEOUT:
+            rospy.logwarn(
+                "[HydrusXiSequencer] ⏱️ Joint1 変形タイムアウト(%.1fs)。安全停止して次相へ。残角=%.3f",
+                DEFORM_TIMEOUT, angle_diff
+            )
+            self._finish_deform(reason="タイムアウト")
+            return
+
+    def _finish_deform(self, reason=""):
+        """deform 相を安全に終了し、PID を戻して静定待ちへ移行する共通処理"""
+        self._send_internal_moment_command(0, 0.0)
+        self.joint_targets['joint1'] = self.current_q['joint1']
+        self._send_synchronized_command()
+
+        if self._switch_joint_controller('joint1', 'start'):
+            rospy.loginfo("[HydrusXiSequencer] Joint 1 変形フェーズ終了(%s) ➔ Step 3 (Joint 1 静定待ち)", reason)
+            self._kick_active = False
+            self.stabilize_loop_count = 0
+            self.current_step = SequenceStep.JOINT1_STABILIZE
+            self.step_start_time = rospy.Time.now()
 
     def _step_joint1_stabilize(self):
         current_vel = abs(self.current_dq['joint1'])
