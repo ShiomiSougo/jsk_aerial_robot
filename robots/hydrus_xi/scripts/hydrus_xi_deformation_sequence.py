@@ -172,29 +172,30 @@ class HydrusXiDeformationSequencer:
         self.moment_pub.publish(msg)
 
     def _calculate_target_moment_joint1(self):
-        """Joint 1 の空力変形用モーメント計算（符号反転問題の対策版）"""
+        """Joint 1 の空力変形用モーメント計算（現在位置による符号補正版）"""
         angle_diff = self._get_angle_difference(self.current_q['joint1'], self.target_q['joint1'])
         
-        # 1. 進行方向の確定（これが tau の符号の基盤になる）
-        # 現在位置から目標位置へ向かうための基本トルク
-        P_GAIN = 0.3 
-        tau_des = P_GAIN * angle_diff
+        # 【重要】現在の関節位置に基づいて、モーメントの符号を決定する
+        # 直立(0)をまたぐ際、モーメントの効き方が逆転するため、
+        # 現在位置が正なら符号を反転させる必要があるケースが多いです
+        direction_multiplier = 1.0
+        if self.current_q['joint1'] > 0.0:
+            direction_multiplier = -1.0 # プラス領域では指令を反転
         
-        # 2. 物理エンジン特有の「逆方向への引力」を打ち消すための符号保持
-        # もし angle_diff がプラスなら、どんな状況でも tau_des はプラスでなければならない
-        # ログで「逆になる」と確認されている場合、tau_desの符号を angle_diff と強制的に一致させる
-        if angle_diff > 0 and tau_des < 0: tau_des = -tau_des
-        if angle_diff < 0 and tau_des > 0: tau_des = -tau_des
-        
-        # 3. 摩擦補償とリミット（実績のあるロジック）
+        # P_GAIN に方向乗数を掛ける
+        P_GAIN = 0.3 * direction_multiplier 
         MAX_T = 0.40
         MIN_T = 0.12
-        if abs(angle_diff) > ANGLE_ERROR_THRESHOLD:
-            if abs(tau_des) < MIN_T: tau_des = MIN_T if tau_des >= 0 else -MIN_T
         
-        if abs(tau_des) > MAX_T: tau_des = MAX_T if tau_des >= 0 else -MAX_T
+        tau = P_GAIN * angle_diff
+        
+        # 符号強制（絶対値で比較して符号を決定）
+        if abs(angle_diff) > ANGLE_ERROR_THRESHOLD:
+            if abs(tau) < MIN_T: tau = MIN_T * (1.0 if tau >= 0 else -1.0)
+        
+        if abs(tau) > MAX_T: tau = MAX_T * (1.0 if tau >= 0 else -1.0)
             
-        return tau_des
+        return tau
     
     # ======================== 各ステップの実行関数 ========================
 
