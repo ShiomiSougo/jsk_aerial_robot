@@ -175,9 +175,8 @@ class HydrusXiDeformationSequencer:
         """Joint 1 の空力変形用モーメント計算"""
         angle_diff_to_final = self._get_angle_difference(self.current_q['joint1'], self.target_q['joint1'])
         
-        # ★修正2：ゲインと上限を強化（戻るための力を確保）
-        P_GAIN = 0.3                
-        MAX_DRIVE_TORQUE_BASE = 0.40 
+        P_GAIN = 0.2                
+        MAX_DRIVE_TORQUE_BASE = 0.18 
         MIN_FRICTION_TORQUE = 0.12  
 
         tau_des = P_GAIN * angle_diff_to_final
@@ -228,9 +227,9 @@ class HydrusXiDeformationSequencer:
         duration = STEP_DURATIONS[SequenceStep.JOINT1_PRETENSION]
         progress = min(1.0, elapsed / duration)
         
-        # ★修正1：目標角度と現在角度の差分から、プリロードの「向き」を決定する
+        # ★修正：プリロード（予張力）の方向を変形方向（angle_diff）と【逆】にする
         angle_diff = self._get_angle_difference(self.current_q['joint1'], self.target_q['joint1'])
-        direction = 1.0 if angle_diff >= 0 else -1.0
+        direction = -1.0 if angle_diff >= 0 else 1.0
         
         current_preload = PRELOAD_TORQUE * progress * direction
         self._send_internal_moment_command(0, current_preload)
