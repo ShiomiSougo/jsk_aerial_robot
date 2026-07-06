@@ -172,30 +172,29 @@ class HydrusXiDeformationSequencer:
         self.moment_pub.publish(msg)
 
     def _calculate_target_moment_joint1(self):
-        """Joint 1 の空力変形用モーメント計算（姿勢補償との競合回避版）"""
-        # 現在位置と目標の差
-        diff = self._get_angle_difference(self.current_q['joint1'], self.target_q['joint1'])
+        """Joint 1 の空力変形用モーメント計算（符号反転問題の対策版）"""
+        angle_diff = self._get_angle_difference(self.current_q['joint1'], self.target_q['joint1'])
         
-        # 姿勢コントローラが0に戻そうとする力（概算）を打ち消すためのゲイン調整
-        # また、現在位置が 0 に近いときは補償が強いため、tauを大きくする
-        P_GAIN = 0.5 # ゲインを上げて姿勢維持力を突破する
-        MAX_T = 0.50 # トルク上限をさらに引き上げる
-        MIN_T = 0.15
+        # 1. 進行方向の確定（これが tau の符号の基盤になる）
+        # 現在位置から目標位置へ向かうための基本トルク
+        P_GAIN = 0.3 
+        tau_des = P_GAIN * angle_diff
         
-        tau = P_GAIN * diff
+        # 2. 物理エンジン特有の「逆方向への引力」を打ち消すための符号保持
+        # もし angle_diff がプラスなら、どんな状況でも tau_des はプラスでなければならない
+        # ログで「逆になる」と確認されている場合、tau_desの符号を angle_diff と強制的に一致させる
+        if angle_diff > 0 and tau_des < 0: tau_des = -tau_des
+        if angle_diff < 0 and tau_des > 0: tau_des = -tau_des
         
-        # 0付近でブレーキがかかるのを防ぐため、現在角度による動的オフセットを加算
-        # current_q がプラスならマイナス方向へ、マイナスならプラス方向へ力を足す
-        offset = -0.05 * self.current_q['joint1'] 
-        tau += offset
+        # 3. 摩擦補償とリミット（実績のあるロジック）
+        MAX_T = 0.40
+        MIN_T = 0.12
+        if abs(angle_diff) > ANGLE_ERROR_THRESHOLD:
+            if abs(tau_des) < MIN_T: tau_des = MIN_T if tau_des >= 0 else -MIN_T
         
-        # 絶対値でトルクの方向を維持
-        if abs(diff) > ANGLE_ERROR_THRESHOLD:
-            if abs(tau) < MIN_T: tau = MIN_T if tau >= 0 else -MIN_T
-        
-        if abs(tau) > MAX_T: tau = MAX_T if tau >= 0 else -MAX_T
+        if abs(tau_des) > MAX_T: tau_des = MAX_T if tau_des >= 0 else -MAX_T
             
-        return tau
+        return tau_des
     
     # ======================== 各ステップの実行関数 ========================
 
