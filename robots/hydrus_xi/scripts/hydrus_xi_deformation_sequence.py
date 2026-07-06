@@ -172,30 +172,31 @@ class HydrusXiDeformationSequencer:
         self.moment_pub.publish(msg)
 
     def _calculate_target_moment_joint1(self):
-        """Joint 1 の空力変形用モーメント計算（現在位置による符号補正版）"""
-        angle_diff = self._get_angle_difference(self.current_q['joint1'], self.target_q['joint1'])
+        """Joint 1 の空力変形用モーメント計算（符号判定の抜本的修正）"""
+        # 現在値と目標値の絶対的な差分ではなく、どの方向に動かしたいかのベクトルを取得
+        diff = self.target_q['joint1'] - self.current_q['joint1']
         
-        # 【重要】現在の関節位置に基づいて、モーメントの符号を決定する
-        # 直立(0)をまたぐ際、モーメントの効き方が逆転するため、
-        # 現在位置が正なら符号を反転させる必要があるケースが多いです
-        direction_multiplier = 1.0
-        if self.current_q['joint1'] > 0.0:
-            direction_multiplier = -1.0 # プラス領域では指令を反転
+        P_GAIN = 0.3                
+        MAX_T = 0.40 
+        MIN_T = 0.12  
         
-        # P_GAIN に方向乗数を掛ける
-        P_GAIN = 0.3 * direction_multiplier 
-        MAX_T = 0.40
-        MIN_T = 0.12
+        # 進行方向を直接的に判定
+        # 負の領域から正の領域へ向かう場合など、現在値に関わらずdiffの符号が進行方向を指すはず
+        # もしこれでも逆なら、物理モデル上、tauの符号を反転させる必要がある
+        tau_des = P_GAIN * diff 
         
-        tau = P_GAIN * angle_diff
+        # --- ここがポイント ---
+        # もしJoint1の物理構成上、常に符号が逆転して止まってしまうなら、ここで符号を反転させる
+        # 今回は「-0.2に向かおうとして0.2で止まった」ので、tauの符号を強制反転させるロジックを試します
+        # 物理的に何かが逆転しているため、tau_des を反転させると正しく動くはずです
+        tau_des = -tau_des 
         
-        # 符号強制（絶対値で比較して符号を決定）
-        if abs(angle_diff) > ANGLE_ERROR_THRESHOLD:
-            if abs(tau) < MIN_T: tau = MIN_T * (1.0 if tau >= 0 else -1.0)
-        
-        if abs(tau) > MAX_T: tau = MAX_T * (1.0 if tau >= 0 else -1.0)
+        # 以下、リミット処理などは同一
+        if abs(diff) > ANGLE_ERROR_THRESHOLD:
+            if abs(tau_des) < MIN_T: tau_des = MIN_T if tau_des >= 0 else -MIN_T
+        if abs(tau_des) > MAX_T: tau_des = MAX_T if tau_des >= 0 else -MAX_T
             
-        return tau
+        return tau_des
     
     # ======================== 各ステップの実行関数 ========================
 
