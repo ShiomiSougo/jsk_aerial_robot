@@ -2,9 +2,9 @@
 # -*- coding: utf-8 -*-
 
 """
-Hydrus-Xi 連続変形シーケンス実行スクリプト（サラサラURDF・安全ソフトランディング版）
-変形順序変更版: Joint 1 (空力) ➔ Joint 2 & 3 (サーボ同時変形)
-修正点: 起動時のコントローラ保護リセット機能 ＆ 予張力の動的符号反転 ＆ 診断ログ
+Hydrus-Xi 連続変形シーケンス実行スクリプト
+変形順序: Joint 1 (空力) ➔ Joint 2 & 3 (サーボ同時変形)
+修正点: 予張力の動的符号反転 ＆ 空力変形時の最大推力トルク上限の解放
 """
 
 import rospy
@@ -32,7 +32,7 @@ STABILIZE_VELOCITY_THRESH = 0.01
 STABILIZE_REQUIRED_LOOPS = 10     
 STABILIZE_TIMEOUT = 4.0           
 
-# 物理的な予張力パラメータ
+# 物理的な予張力パラメータ（推力による内部モーメント）
 PRELOAD_TORQUE = 0.40             
 
 JOINT_CONTROLLERS = {
@@ -74,7 +74,6 @@ class HydrusXiDeformationSequencer:
         try:
             first_msg = rospy.wait_for_message('/hydrus_xi/joint_states', JointState, timeout=5.0)
             self._joint_state_callback(first_msg)
-            
             self.joint_targets['joint1'] = self.current_q['joint1']
             self.joint_targets['joint2'] = self.current_q['joint2']
             self.joint_targets['joint3'] = self.current_q['joint3']
@@ -82,7 +81,7 @@ class HydrusXiDeformationSequencer:
         except rospy.ROSException:
             rospy.logwarn("[HydrusXiSequencer] ⚠️ タイムアウト。初期値0.0で開始します。")
 
-        # ★追加: 前回 Ctrl+C で停止した際の後遺症を防ぐため、全関節コントローラを強制再起動
+        # コントローラの保護リセット
         rospy.loginfo("[HydrusXiSequencer] 🛡️ 安全のため全関節コントローラをSTART状態にリセットします...")
         self._switch_joint_controller('joint1', 'start')
         self._switch_joint_controller('joint2', 'start')
@@ -109,8 +108,7 @@ class HydrusXiDeformationSequencer:
                 req.stop_controllers = [controller_name]
             req.strictness = 1  
             res = self.switch_ctrl_client(req)
-            if res.ok: return True
-            else: return False
+            return res.ok
         except Exception:
             return False
 
@@ -157,9 +155,11 @@ class HydrusXiDeformationSequencer:
 
     def _calculate_target_moment_joint1(self):
         angle_diff_to_final = self._get_angle_difference(self.current_q['joint1'], self.target_q['joint1'])
-        P_GAIN = 0.2                
-        MAX_DRIVE_TORQUE_BASE = 0.18 
-        MIN_FRICTION_TORQUE = 0.12  
+        
+        P_GAIN = 0.3                
+        # ★修正: Deform中の最大推力トルクを、Preload時と同水準（0.40Nm）まで解放
+        MAX_DRIVE_TORQUE_BASE = 0.40 
+        MIN_FRICTION_TORQUE = 0.15  
 
         tau_des = P_GAIN * angle_diff_to_final
         remaining_angle = abs(angle_diff_to_final)
@@ -202,12 +202,11 @@ class HydrusXiDeformationSequencer:
         progress = min(1.0, elapsed / duration)
         
         angle_diff = self._get_angle_difference(self.current_q['joint1'], self.target_q['joint1'])
+        # 目標方向へ推力を生成
         direction = 1.0 if angle_diff >= 0 else -1.0
         current_preload = PRELOAD_TORQUE * progress * direction
         
-        # 診断ログ：今どっちの方向にどれだけ力をかけているか出力
         rospy.loginfo_throttle(0.5, f"🔍 [Pretension] Target: {self.target_q['joint1']}, Diff: {angle_diff:.2f}, Dir: {direction}, Preload: {current_preload:.3f} Nm")
-        
         self._send_internal_moment_command(0, current_preload)
         
         if elapsed >= duration:
@@ -222,7 +221,6 @@ class HydrusXiDeformationSequencer:
         
         tau_des = self._calculate_target_moment_joint1()
         
-        # 診断ログ：実際に空力変形に送っているトルク指令値
         angle_diff = self._get_angle_difference(self.current_q['joint1'], self.target_q['joint1'])
         rospy.loginfo_throttle(0.5, f"🚀 [Deform J1] Diff: {angle_diff:.3f} rad, Command Tau: {tau_des:.3f} Nm")
         
