@@ -4,6 +4,7 @@
 """
 Hydrus-Xi 連続変形シーケンス実行スクリプト（サラサラURDF・安全ソフトランディング版）
 変形順序変更版: Joint 1 (空力) ➔ Joint 2 & 3 (サーボ同時変形)
+修正点: Joint 1 のプリロード（予張力）の方向を目標角度に合わせて動的に反転
 
 使用例:
   python hydrus_xi_deformation_sequence.py -0.3 1.0 -0.3
@@ -36,7 +37,7 @@ STABILIZE_REQUIRED_LOOPS = 10     # 収束ループ数
 STABILIZE_TIMEOUT = 4.0           # タイムアウト時間 [s]
 
 # 物理的な予張力パラメータ
-PRELOAD_TORQUE = 0.40             # Joint 1用
+PRELOAD_TORQUE = 0.40             # Joint 1用ベース値
 
 # コントローラ名マッピング
 JOINT_CONTROLLERS = {
@@ -227,7 +228,11 @@ class HydrusXiDeformationSequencer:
         duration = STEP_DURATIONS[SequenceStep.JOINT1_PRETENSION]
         progress = min(1.0, elapsed / duration)
         
-        current_preload = PRELOAD_TORQUE * progress
+        # 目標方向を判定し、プリロードの符号を合わせる
+        angle_diff = self._get_angle_difference(self.current_q['joint1'], self.target_q['joint1'])
+        direction = 1.0 if angle_diff >= 0 else -1.0
+        
+        current_preload = PRELOAD_TORQUE * progress * direction
         self._send_internal_moment_command(0, current_preload)
         
         if elapsed >= duration:
