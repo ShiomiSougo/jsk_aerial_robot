@@ -172,31 +172,30 @@ class HydrusXiDeformationSequencer:
         self.moment_pub.publish(msg)
 
     def _calculate_target_moment_joint1(self):
-        """Joint 1 の空力変形用モーメント計算（符号判定の抜本的修正）"""
-        # 現在値と目標値の絶対的な差分ではなく、どの方向に動かしたいかのベクトルを取得
-        diff = self.target_q['joint1'] - self.current_q['joint1']
+        """Joint 1 の空力変形用モーメント計算（姿勢補償との競合回避版）"""
+        # 現在位置と目標の差
+        diff = self._get_angle_difference(self.current_q['joint1'], self.target_q['joint1'])
         
-        P_GAIN = 0.3                
-        MAX_T = 0.40 
-        MIN_T = 0.12  
+        # 姿勢コントローラが0に戻そうとする力（概算）を打ち消すためのゲイン調整
+        # また、現在位置が 0 に近いときは補償が強いため、tauを大きくする
+        P_GAIN = 0.5 # ゲインを上げて姿勢維持力を突破する
+        MAX_T = 0.50 # トルク上限をさらに引き上げる
+        MIN_T = 0.15
         
-        # 進行方向を直接的に判定
-        # 負の領域から正の領域へ向かう場合など、現在値に関わらずdiffの符号が進行方向を指すはず
-        # もしこれでも逆なら、物理モデル上、tauの符号を反転させる必要がある
-        tau_des = P_GAIN * diff 
+        tau = P_GAIN * diff
         
-        # --- ここがポイント ---
-        # もしJoint1の物理構成上、常に符号が逆転して止まってしまうなら、ここで符号を反転させる
-        # 今回は「-0.2に向かおうとして0.2で止まった」ので、tauの符号を強制反転させるロジックを試します
-        # 物理的に何かが逆転しているため、tau_des を反転させると正しく動くはずです
-        tau_des = -tau_des 
+        # 0付近でブレーキがかかるのを防ぐため、現在角度による動的オフセットを加算
+        # current_q がプラスならマイナス方向へ、マイナスならプラス方向へ力を足す
+        offset = -0.05 * self.current_q['joint1'] 
+        tau += offset
         
-        # 以下、リミット処理などは同一
+        # 絶対値でトルクの方向を維持
         if abs(diff) > ANGLE_ERROR_THRESHOLD:
-            if abs(tau_des) < MIN_T: tau_des = MIN_T if tau_des >= 0 else -MIN_T
-        if abs(tau_des) > MAX_T: tau_des = MAX_T if tau_des >= 0 else -MAX_T
+            if abs(tau) < MIN_T: tau = MIN_T if tau >= 0 else -MIN_T
+        
+        if abs(tau) > MAX_T: tau = MAX_T if tau >= 0 else -MAX_T
             
-        return tau_des
+        return tau
     
     # ======================== 各ステップの実行関数 ========================
 
