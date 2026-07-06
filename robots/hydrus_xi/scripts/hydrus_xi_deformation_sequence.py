@@ -335,7 +335,6 @@ class HydrusXiDeformationSequencer:
             rospy.loginfo("[HydrusXiSequencer] 🎉 全変形シーケンス（Joint1空力 -> Joint2&3サーボ）が正常に完走しました！")
 
     def _control_loop(self, event):
-        rospy.loginfo_throttle(1.0, "[DEBUG] Current Step: %s, Stabilize Count: %d" % (self.current_step, self.stabilize_loop_count))
         try:
             current_time = rospy.Time.now()
             if current_time.is_zero(): return
