@@ -172,27 +172,33 @@ class HydrusXiDeformationSequencer:
         self.moment_pub.publish(msg)
 
     def _calculate_target_moment_joint1(self):
-        """Joint 1 の空力変形用モーメント計算（符号反転問題の対策版）"""
-        angle_diff = self._get_angle_difference(self.current_q['joint1'], self.target_q['joint1'])
+        """Joint 1 の空力変形用モーメント計算"""
+        angle_diff_to_final = self._get_angle_difference(self.current_q['joint1'], self.target_q['joint1'])
         
-        # 1. 進行方向の確定（これが tau の符号の基盤になる）
-        # 現在位置から目標位置へ向かうための基本トルク
-        P_GAIN = 0.3 
-        tau_des = P_GAIN * angle_diff
+        P_GAIN = 0.2                
+        MAX_DRIVE_TORQUE_BASE = 0.18 
+        MIN_FRICTION_TORQUE = 0.12  
+
+        tau_des = P_GAIN * angle_diff_to_final
+        remaining_angle = abs(angle_diff_to_final)
         
-        # 2. 物理エンジン特有の「逆方向への引力」を打ち消すための符号保持
-        # もし angle_diff がプラスなら、どんな状況でも tau_des はプラスでなければならない
-        # ログで「逆になる」と確認されている場合、tau_desの符号を angle_diff と強制的に一致させる
-        if angle_diff > 0 and tau_des < 0: tau_des = -tau_des
-        if angle_diff < 0 and tau_des > 0: tau_des = -tau_des
-        
-        # 3. 摩擦補償とリミット（実績のあるロジック）
-        MAX_T = 0.40
-        MIN_T = 0.12
-        if abs(angle_diff) > ANGLE_ERROR_THRESHOLD:
-            if abs(tau_des) < MIN_T: tau_des = MIN_T if tau_des >= 0 else -MIN_T
-        
-        if abs(tau_des) > MAX_T: tau_des = MAX_T if tau_des >= 0 else -MAX_T
+        if remaining_angle > ANGLE_ERROR_THRESHOLD:
+            if tau_des > 0 and tau_des < MIN_FRICTION_TORQUE:
+                tau_des = MIN_FRICTION_TORQUE
+            elif tau_des < 0 and tau_des > -MIN_FRICTION_TORQUE:
+                tau_des = -MIN_FRICTION_TORQUE
+
+        DECEL_ZONE = 0.05 
+        if remaining_angle < DECEL_ZONE:
+            fade_factor = remaining_angle / DECEL_ZONE
+            dynamic_max_torque = MAX_DRIVE_TORQUE_BASE * fade_factor
+        else:
+            dynamic_max_torque = MAX_DRIVE_TORQUE_BASE
+            
+        if tau_des > dynamic_max_torque:
+            tau_des = dynamic_max_torque
+        elif tau_des < -dynamic_max_torque:
+            tau_des = -dynamic_max_torque
             
         return tau_des
     
