@@ -137,7 +137,7 @@
         <child link="link${child}"/>
         <origin rpy="0 0 0" xyz="${link_length} 0 0"/>
         <axis xyz="0 0 1"/>
-        <dynamics damping="0.05" friction="0.05"/>
+        <dynamics damping="0.05" friction="0.01"/>
       </joint>
     </xacro:unless>
 
