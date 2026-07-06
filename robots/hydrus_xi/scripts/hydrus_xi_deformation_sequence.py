@@ -36,7 +36,7 @@ STABILIZE_REQUIRED_LOOPS = 10     # 収束ループ数
 STABILIZE_TIMEOUT = 4.0           # タイムアウト時間 [s]
 
 # 物理的な予張力パラメータ
-PRELOAD_TORQUE = -0.2             # Joint 1用
+PRELOAD_TORQUE = 0.02             # Joint 1用
 
 # コントローラ名マッピング
 JOINT_CONTROLLERS = {
@@ -176,8 +176,8 @@ class HydrusXiDeformationSequencer:
         angle_diff_to_final = self._get_angle_difference(self.current_q['joint1'], self.target_q['joint1'])
         
         P_GAIN = 0.2                
-        MAX_DRIVE_TORQUE_BASE = 0.18 
-        MIN_FRICTION_TORQUE = 0.12  
+        MAX_DRIVE_TORQUE_BASE = 0.40 
+        MIN_FRICTION_TORQUE = 0.20  
 
         tau_des = P_GAIN * angle_diff_to_final
         remaining_angle = abs(angle_diff_to_final)
