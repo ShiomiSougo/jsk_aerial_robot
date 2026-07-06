@@ -36,7 +36,7 @@ STABILIZE_REQUIRED_LOOPS = 10     # 収束ループ数
 STABILIZE_TIMEOUT = 4.0           # タイムアウト時間 [s]
 
 # 物理的な予張力パラメータ
-PRELOAD_TORQUE = 0.0000001             # Joint 1用
+PRELOAD_TORQUE = -0.2             # Joint 1用
 
 # コントローラ名マッピング
 JOINT_CONTROLLERS = {
