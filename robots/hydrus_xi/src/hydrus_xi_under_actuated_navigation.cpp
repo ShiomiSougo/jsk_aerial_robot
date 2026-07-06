@@ -15,7 +15,7 @@ namespace
       if (planner->hasMomentCommand() && planner->getTargetJointIndex() >= 0) {
           double current_tau = planner->computeExactInternalMoment(x, robot_model);
           double diff = current_tau - planner->getTauDesTarget();
-          double w_tau = 3000.0; 
+          double w_tau = 6000.0; 
           
           // ====================================================================
           // ★ 【修正1】joint3のときだけデバッグログを出力
