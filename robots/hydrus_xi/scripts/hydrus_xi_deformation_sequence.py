@@ -331,6 +331,9 @@ class HydrusXiDeformationSequencer:
                 self._probe_peak_dq = 0.0
                 self._probe_first_dq_sign = '0'
 
+                # ★deform トルク観測用のログ間引きカウンタ
+                self._deform_log_counter = 0
+
                 self.current_step = SequenceStep.JOINT1_DEFORM
                 self.step_start_time = rospy.Time.now()
 
@@ -343,6 +346,19 @@ class HydrusXiDeformationSequencer:
         
         tau_des = self._calculate_target_moment_joint1()
         self._send_internal_moment_command(0, tau_des)
+
+        # ★deform 中の指令トルク内訳を約0.25秒おきに出力（摩擦フロアが効いているか確認用）
+        self._deform_log_counter += 1
+        if self._deform_log_counter % 5 == 0:  # 20Hz -> 約4Hz
+            angle_diff_dbg = self._get_angle_difference(self.current_q['joint1'], self.target_q['joint1'])
+            raw_p = 0.2 * angle_diff_dbg  # フロア適用前の生P制御値（P_GAIN=0.2）
+            floor_active = abs(raw_p) < 0.12 and abs(angle_diff_dbg) > ANGLE_ERROR_THRESHOLD
+            rospy.loginfo(
+                "[DEFORM] run#%d 残角=%.3f | 生P=%.4f | 指令tau=%.4f | フロア効=%s | 実dq1=%.4f | q1=%.3f",
+                self.run_index, angle_diff_dbg, raw_p, tau_des,
+                ("YES(->±0.12)" if floor_active else "no"),
+                self.current_dq['joint1'], self.current_q['joint1']
+            )
         
         if abs(self._get_angle_difference(self.current_q['joint1'], self.target_q['joint1'])) <= ANGLE_ERROR_THRESHOLD:
             self._send_internal_moment_command(0, 0.0)
