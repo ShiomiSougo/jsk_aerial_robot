@@ -182,8 +182,8 @@ class HydrusXiDeformationSequencer:
         MAX_DRIVE_TORQUE_BASE = 0.18
         MIN_FRICTION_TORQUE = 0.12
 
-        # ★プリロードと同じ向き（= 変形方向 angle_diff とは逆）に駆動する
-        direction = -1.0 if angle_diff_to_final >= 0 else 1.0
+        # ★プリロードと同じ向き（= 変形方向 angle_diff と同じ）に駆動する
+        direction = 1.0 if angle_diff_to_final >= 0 else -1.0
         remaining_angle = abs(angle_diff_to_final)
 
         magnitude = P_GAIN * remaining_angle
@@ -231,9 +231,9 @@ class HydrusXiDeformationSequencer:
         duration = STEP_DURATIONS[SequenceStep.JOINT1_PRETENSION]
         progress = min(1.0, elapsed / duration)
 
-        # ★プリロード（予張力）の方向を変形方向（angle_diff）と【逆】にする
+        # ★プリロード（予張力）の方向を変形方向（angle_diff）と【同じ】にする
         angle_diff = self._get_angle_difference(self.current_q['joint1'], self.target_q['joint1'])
-        direction = -1.0 if angle_diff >= 0 else 1.0
+        direction = 1.0 if angle_diff >= 0 else -1.0
 
         current_preload = PRELOAD_TORQUE * progress * direction
         self._send_internal_moment_command(0, current_preload)
