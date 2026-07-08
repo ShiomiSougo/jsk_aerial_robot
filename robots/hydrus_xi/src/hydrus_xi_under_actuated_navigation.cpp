@@ -10,24 +10,29 @@ namespace
   int invalid_cnt = 0;
 
   // 共通ペナルティ計算用関数
+  // ====================================================================
+  // ★ 【修正3】コメント修正：実際は二乗ペナルティで非微分最適化用
+  // COBYLA（微分不要）なので勾配情報は使われない。
+  // 行き過ぎ/不足の区別が必要ならば、「差分の符号を持たせた項」を
+  // 目的関数に直接組み込むか、LD_SLSQP等の勾配法に変更する必要がある。
+  // ====================================================================
   double computeMomentPenalty(HydrusXiUnderActuatedNavigator *planner, const std::vector<double> &x, boost::shared_ptr<HydrusTiltedRobotModel> robot_model)
   {
-      if (planner->hasMomentCommand() && planner->getTargetJointIndex() >= 0) {
-          double current_tau = planner->computeExactInternalMoment(x, robot_model);
-          double diff = current_tau - planner->getTauDesTarget();
-          double w_tau = 2000.0; 
-          
-          // ====================================================================
-          // ★ 【修正1】joint3のときだけデバッグログを出力
-          // ====================================================================
-          if (planner->getTargetJointIndex() == 2) {
-              ROS_INFO_THROTTLE(0.5, "joint3 penalty: CurrentTau=%.4f, TargetTau=%.4f, Diff^2=%.6f, penalty=%.6f",
-                  current_tau, planner->getTauDesTarget(), diff*diff, w_tau * (diff * diff));
-          }
-          
-          return w_tau * (diff * diff);
+      // ★ 【修正1・最重要】has_moment_command_フラグが立たない限りペナルティ無効
+      if (!planner->hasMomentCommand() || planner->getTargetJointIndex() < 0) {
+          return 0.0;
       }
-      return 0.0;
+
+      double current_tau = planner->computeExactInternalMoment(x, robot_model);
+      double diff = current_tau - planner->getTauDesTarget();
+      double w_tau = 2000.0;
+      
+      if (planner->getTargetJointIndex() == 2) {
+          ROS_INFO_THROTTLE(0.5, "joint3 penalty: CurrentTau=%.4f, TargetTau=%.4f, Diff=%.6f, DiffSq=%.6f, penalty=%.6f",
+              current_tau, planner->getTauDesTarget(), diff, diff*diff, w_tau * (diff * diff));
+      }
+      
+      return w_tau * (diff * diff);
   }
 
   double maximizeFCTMin(const std::vector<double> &x, std::vector<double> &grad, void *planner_ptr)
@@ -42,9 +47,6 @@ namespace
 
     robot_model->updateRobotModel(joint_positions);
 
-    // ====================================================================
-    // ★ 【修正2】stabilityCheckを常にパスするようにfalseを挿入
-    // ====================================================================
     if(false && !robot_model->stabilityCheck(planner->getPlanVerbose()))
     {
         invalid_cnt ++;
@@ -84,9 +86,6 @@ namespace
 
     robot_model->updateRobotModel(joint_positions);
 
-    // ======================================================gimbal_ctrl_pub_==============
-    // ★ 【修正2】stabilityCheckを常にパスするようにfalseを挿入
-    // ====================================================================
     if(false && !robot_model->stabilityCheck(planner->getPlanVerbose()))
     {
         invalid_cnt ++;
@@ -220,9 +219,6 @@ void HydrusXiUnderActuatedNavigator::initialize(ros::NodeHandle nh, ros::NodeHan
         }
     }
 
-  // ====================================================================
-  // ★ 【修正1】各ジンバルごとに個別のPublisherを用意する
-  // ====================================================================
   gimbal_ctrl_pubs_.resize(control_gimbal_names_.size());
   for(int i = 0; i < control_gimbal_names_.size(); i++)
     {
@@ -242,11 +238,7 @@ void HydrusXiUnderActuatedNavigator::initialize(ros::NodeHandle nh, ros::NodeHan
   vectoring_nl_solver_->add_inequality_constraint(baselinkRotConstraint, this, 1e-8);
 
   vectoring_nl_solver_->set_xtol_rel(1e-4);
-  
-  // ====================================================================
-  // ★ 調整ポイント：最大計算回数を制限して30秒フリーズを防ぐ
-  // ====================================================================
-  vectoring_nl_solver_->set_maxeval(50); // 元の1000から50〜100程度に制限してリアルタイム性を確保
+  vectoring_nl_solver_->set_maxeval(50);
 
   double rotor_num = robot_model->getRotorNum();
 
@@ -275,9 +267,6 @@ void HydrusXiUnderActuatedNavigator::initialize(ros::NodeHandle nh, ros::NodeHan
   if(!yaw_range_lp_solver_.initSolver())
     throw std::runtime_error("can not init LP solver based on osqp");
 
-  // ====================================================================
-  // ★ 追加：シミュレーション再起動時のためにジンバル角の初期状態を完全リセット
-  // ====================================================================
   opt_gimbal_angles_.clear();
   prev_opt_gimbal_angles_.clear();
 
@@ -368,13 +357,10 @@ bool HydrusXiUnderActuatedNavigator::plan()
   vectoring_nl_solver_->set_lower_bounds(lb);
   vectoring_nl_solver_->set_upper_bounds(ub);
 
-  // ====================================================================
-  // ★ 【修正3】nlopt::optimize直前にjoint3のデバッグログを追加
-  // ====================================================================
-  if (has_moment_command_ && target_joint_index_ == 2) {
+  if (has_moment_command_ && target_joint_index_ >= 0) {
       double current_tau = computeExactInternalMoment(opt_gimbal_angles_, robot_model_for_plan_);
-      ROS_INFO_THROTTLE(0.5, "plan() before optimize: joint3 current_tau=%.4f, target_tau=%.4f, gimbal_angles=[%.4f, %.4f, %.4f, %.4f]",
-          current_tau, tau_des_target_,
+      ROS_INFO_THROTTLE(0.5, "plan() before optimize: joint%d current_tau=%.4f, target_tau=%.4f, gimbal_angles=[%.4f, %.4f, %.4f, %.4f]",
+          target_joint_index_ + 1, current_tau, tau_des_target_,
           opt_gimbal_angles_.size() > 0 ? opt_gimbal_angles_[0] : 0,
           opt_gimbal_angles_.size() > 1 ? opt_gimbal_angles_[1] : 0,
           opt_gimbal_angles_.size() > 2 ? opt_gimbal_angles_[2] : 0,
@@ -440,22 +426,40 @@ void HydrusXiUnderActuatedNavigator::rosParamInit()
   getParam<double>(navi_nh, "baselink_rot_thresh", baselink_rot_thresh_, 0.02);
   getParam<double>(navi_nh, "fc_t_min_thresh", fc_t_min_thresh_, 2.0);
 
-  // ====================================================================
-  // ★ デバッグ用追加：不等式制約の閾値を強制的に大幅緩和（上書き）
-  // ====================================================================
-  baselink_rot_thresh_ = 0.08;  // 約14度までの機体の傾きを許容（元は 0.02）
-  fc_t_min_thresh_ = 0.2;       // 安全マージンの最低要求を下げる（元は 2.0→0.5）
-  gimbal_delta_angle_ = 0.5;    // 1ステップでの最大ジンバル可動域を拡大（元は 0.2）
+  baselink_rot_thresh_ = 0.08;
+  fc_t_min_thresh_ = 0.2;
+  gimbal_delta_angle_ = 0.5;
 }
 
 void HydrusXiUnderActuatedNavigator::momentCommandCallback(
     const std_msgs::Float64MultiArray::ConstPtr& msg)
 {
+  // ====================================================================
+  // ★ 【修正1・最重要】モーメント命令の解析
+  // msg->data[0] = target_joint_index (-1=なし, 0,1,2,...=対象関節)
+  // msg->data[1] = tau_des_target (目標モーメント [N・m])
+  // 
+  // target_joint_index_ = -1 のとき has_moment_command_ = false
+  // それ以外のとき has_moment_command_ = true
+  // ====================================================================
   if (msg->data.size() < 2) return;
 
-  target_joint_index_ = static_cast<int>(msg->data[0]);
-  tau_des_target_ = msg->data[1];
-  has_moment_command_ = true;
+  int new_target_joint_index = static_cast<int>(msg->data[0]);
+  double new_tau_des_target = msg->data[1];
+
+  // target_joint_indexが-1（センチネル値）なら、モーメント制御OFF
+  if (new_target_joint_index == -1) {
+    target_joint_index_ = -1;
+    tau_des_target_ = 0.0;
+    has_moment_command_ = false;
+    ROS_INFO_THROTTLE(1.0, "[HydrusXiUnderActuatedNavigator] 📭 モーメント制御 OFF (target_joint_index = -1)");
+  } else {
+    target_joint_index_ = new_target_joint_index;
+    tau_des_target_ = new_tau_des_target;
+    has_moment_command_ = true;
+    ROS_INFO_THROTTLE(0.5, "[HydrusXiUnderActuatedNavigator] 📨 モーメント命令受信 ON: joint_idx=%d, tau_target=%.4f",
+                      target_joint_index_, tau_des_target_);
+  }
 }
 
 double HydrusXiUnderActuatedNavigator::computeExactInternalMoment(
@@ -527,6 +531,7 @@ double HydrusXiUnderActuatedNavigator::computeExactInternalMoment(
 
   return tau_internal;
 }
+
 std::vector<double> HydrusXiUnderActuatedNavigator::extractThrustsFromOptVars(
     const std::vector<double>& x,
     const boost::shared_ptr<HydrusTiltedRobotModel>& robot_model_ptr)
