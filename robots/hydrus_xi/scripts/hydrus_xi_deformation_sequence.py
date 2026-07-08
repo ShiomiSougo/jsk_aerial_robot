@@ -208,32 +208,39 @@ class HydrusXiDeformationSequencer:
 
     def update_target_angles(self, q1, q2, q3):
         """
-        ★ 【修正1・最重要】新規目標角度受信時に状態を完全リセット
-        ★ 【修正5・今回】__init__ と同じクリーンな状態から始めることで、
-           2回目以降も1回目と同一挙動にする。
+        ★ 【修正5・アップデート】新規目標角度受信時に状態を完全リセット
+        2回目以降も Joint1 変形中にサーボが確実に 0 になるよう、初期化順序を厳格化。
         """
+        rospy.loginfo("[HydrusXiSequencer] 🔄 新目標の処理を開始します...")
+
+        # 1. まず現在の実角度をターゲット値として同期バッファに完全に上書き
+        #    （古い目標角度がコントローラに送信されるのを防ぐ最重要ガード）
+        for j in self.all_joint_names:
+            self.joint_targets[j] = self.current_q[j]
+
+        # 2. 一度完全に内部 moment 制御を OFF に叩き落とす
+        self._send_internal_moment_command(-1, 0.0)
+
+        # 3. joint1 サーボを確実に一度 running へ戻す（実状態検証つき）
+        #    これにより、次の PRETENSION での stop が確実にクリーンな「始動 ➔ 停止」になる
+        self._ensure_controller_state('joint1', want_running=True)
+
+        # 4. 現在角ターゲットを確実にパブリッシュしてコントローラの偏差をゼロクリア
+        self._send_synchronized_command()
+        rospy.sleep(0.1) # コントローラ内部のバッファが更新されるのをわずかに待つ
+
+        # 5. ターゲット配列を次の目標値に更新
         self.target_q['joint1'] = q1
         self.target_q['joint2'] = q2
         self.target_q['joint3'] = q3
 
-        # ★ 【修正5】joint_targets を現在角にリセットし、
-        #    joint1 サーボを確実に running へ戻してから同期コマンド再送。
-        #    （こうしないと 2回目以降 pretension の stop が「running→stopped」に
-        #      ならず、DEFORM 中もサーボトルクが残る原因になる）
-        for j in self.all_joint_names:
-            self.joint_targets[j] = self.current_q[j]
-        self._ensure_controller_state('joint1', want_running=True)
-        self._send_synchronized_command()
-
+        # 6. ステートマシンの完全初期化
         self.current_step = SequenceStep.INIT
         self.step_start_time = rospy.Time.now()
         self.stabilize_loop_count = 0
         
-        # ★ 【修正1】新規開始時もセンチネル値（-1）でモーメント制御OFF
-        self._send_internal_moment_command(-1, 0.0)
+        rospy.loginfo("[HydrusXiSequencer] 🟩 新目標受理完了: q1=%.3f, q2=%.3f, q3=%.3f。INIT から再始動。", q1, q2, q3)
         
-        rospy.loginfo("[HydrusXiSequencer] 🔄 新目標受理: q1=%.3f, q2=%.3f, q3=%.3f。再始動。", q1, q2, q3)
-
     def _joint_state_callback(self, msg):
         for i, name in enumerate(msg.name):
             if name in self.current_q:
