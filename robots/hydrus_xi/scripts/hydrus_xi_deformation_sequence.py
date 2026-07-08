@@ -208,40 +208,37 @@ class HydrusXiDeformationSequencer:
 
     def update_target_angles(self, q1, q2, q3):
         """
-        ★ 【完全リセット版】新規目標角度受信時にコントローラの内部バッファを強制リフレッシュ
+        ★ 【安全バッファ消滅版】
+        Gazeboをクラッシュさせる SwitchController を使わず、
+        現在角のホールドによってPIDの残存トルク（I項）を安全にゼロクリアする。
         """
-        rospy.loginfo("[HydrusXiSequencer] 🔄 新目標の処理を開始（コントローラ完全再起動シーケンス）...")
+        rospy.loginfo("[HydrusXiSequencer] 🔄 新目標の処理を開始（安全バッファクリア）...")
 
-        # 1. 現在の実角度をターゲット値として同期バッファに完全に上書き
+        # 1. まず現在の実角度をターゲット値として同期バッファに完全に上書き
         for j in self.all_joint_names:
             self.joint_targets[j] = self.current_q[j]
 
         # 2. モーメント制御を完全に OFF
         self._send_internal_moment_command(-1, 0.0)
 
-        # 3. 【核心部】一回 stop させて内部の PID 積分項（I項）を完全に叩き落とす
-        rospy.loginfo("[HydrusXiSequencer] ⚡ joint1 コントローラを強制リセット中...")
-        self._ensure_controller_state('joint1', want_running=False)
-        rospy.sleep(0.1) # ハードウェア側で完全に停止が処理されるのを待つ
+        # 3. コントローラは running のまま、現在角コマンドを数回パブリッシュして
+        #    内部の偏差および累積積分項（I項）を安全にお掃除する（Gazeboクラッシュ対策）
+        rate = rospy.Rate(20)
+        for _ in range(5): # 約0.25秒間、現在位置をホールドし続ける
+            self._send_synchronized_command()
+            rate.sleep()
 
-        # 4. 再び running 状態に戻す（これでPIDバッファが完全にゼロから再スタートする）
-        self._ensure_controller_state('joint1', want_running=True)
-
-        # 5. 現在角を即座に送り込んで初期偏差をゼロにする
-        self._send_synchronized_command()
-        rospy.sleep(0.05)
-
-        # 6. ターゲット配列を次の目標値に更新
+        # 4. 蓄積が抜けた状態で、ターゲット配列を次の目標値に更新
         self.target_q['joint1'] = q1
         self.target_q['joint2'] = q2
         self.target_q['joint3'] = q3
 
-        # 7. ステートマシンの完全初期化
+        # 5. ステートマシンの完全初期化
         self.current_step = SequenceStep.INIT
         self.step_start_time = rospy.Time.now()
         self.stabilize_loop_count = 0
         
-        rospy.loginfo("[HydrusXiSequencer] 🟩 コントローラ強制リフレッシュ完了。q1=%.3f, q2=%.3f, q3=%.3f で再始動。", q1, q2, q3)
+        rospy.loginfo("[HydrusXiSequencer] 🟩 安全初期化完了。q1=%.3f, q2=%.3f, q3=%.3f で再始動。", q1, q2, q3)
         
     def _joint_state_callback(self, msg):
         for i, name in enumerate(msg.name):
