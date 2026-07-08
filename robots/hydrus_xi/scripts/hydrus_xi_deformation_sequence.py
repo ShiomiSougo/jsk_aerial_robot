@@ -358,6 +358,17 @@ class HydrusXiDeformationSequencer:
         self._send_internal_moment_command(0, current_preload)
         
         if elapsed >= duration:
+            # ================================================================
+            # 💡 【重要改善】コントローラを stop する前に、ハードウェアバッファを0で上書きする
+            # ================================================================
+            # 1. モーメント制御を一旦 OFF
+            self._send_internal_moment_command(-1, 0.0)
+            
+            # 2. 位置制御コントローラに対して、一時的に effort=0 を強制的に送りつけるか、
+            #    あるいは単一メッセージで完全にクリアシグナルを送る。
+            #    （ROS Controlのバグ回避のため、空のコマンド、または一瞬だけクリア処理）
+            # ================================================================
+
             # ★ 【修正5】stop が「実際に stopped になったか」を検証してから遷移
             if self._ensure_controller_state('joint1', want_running=False):
                 rospy.loginfo("[HydrusXiSequencer] Step 1 完了 ➔ Step 2 (Joint 1 純空力変形開始)")
