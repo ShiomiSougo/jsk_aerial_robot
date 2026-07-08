@@ -37,7 +37,7 @@ ANGLE_ERROR_THRESHOLD = 0.05     # 角度誤差閾値 [rad]
 JOINT_RAMP_RATE_BASE = 0.005     # 基本スロープ速度 [rad/loop]
 
 # 静定判定用のパラメータ
-STABILIZE_VELOCITY_THRESH = 0.03  # 静定角速度閾値 [rad/s]
+STABILIZE_VELOCITY_THRESH = 0.01  # 静定角速度閾値 [rad/s]
 STABILIZE_REQUIRED_LOOPS = 10     # 収束ループ数
 STABILIZE_TIMEOUT = 4.0           # タイムアウト時間 [s]
 
