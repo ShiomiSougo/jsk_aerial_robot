@@ -42,8 +42,8 @@ PRELOAD_TORQUE = 0.40
 # ★ 【修正6】Joint1 変形（PD制御）用チューニングパラメータ
 J1_P_GAIN = 0.2                 # 比例ゲイン
 J1_D_GAIN = 0.06                # ★ 速度ダンピング（減速の主役。まず小さめから上げて終端速度を見る）
-J1_MAX_DRIVE_TORQUE_BASE = 0.20 # 駆動トルク上限
-J1_MIN_FRICTION_TORQUE = 0.15   # 静止摩擦を破る最低トルク（＝フェードの下限クランプ値でもある）
+J1_MAX_DRIVE_TORQUE_BASE = 0.35 # 駆動トルク上限
+J1_MIN_FRICTION_TORQUE = 0.25   # 静止摩擦を破る最低トルク（＝フェードの下限クランプ値でもある）
 J1_STATIC_VEL = 0.02            # これ以下を「ほぼ静止」とみなしフロアを効かせる
 J1_DECEL_ZONE = 0.02            # ★ フェードは広げない（食い殺し回避）。減速は D 項が担う
 J1_DEFORM_VEL_GATE = 0.03       # ★ サーボ受け渡し時の残留速度上限（速度ゲート）
