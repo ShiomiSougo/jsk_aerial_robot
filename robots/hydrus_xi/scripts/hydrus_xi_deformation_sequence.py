@@ -7,6 +7,7 @@ Hydrus-Xi 連続変形シーケンス実行スクリプト（サラサラURDF・
 
 【修正1・最重要】センチネル値 target_joint_index=-1 でモーメント制御OFF
 【修正4】single message for Joint2&3 Servo to avoid race condition
+【修正6】Joint1 変形を PD 制御化（フェード非依存・目標近傍でも符号維持・速度ゲート遷移）
 
 使用例:
   python hydrus_xi_deformation_sequence.py -0.3 1.0 -0.3
@@ -37,6 +38,16 @@ STABILIZE_VELOCITY_THRESH = 0.01
 STABILIZE_REQUIRED_LOOPS = 10
 STABILIZE_TIMEOUT = 4.0
 PRELOAD_TORQUE = 0.40
+
+# ★ 【修正6】Joint1 変形（PD制御）用チューニングパラメータ
+J1_P_GAIN = 0.2                 # 比例ゲイン
+J1_D_GAIN = 0.06                # ★ 速度ダンピング（減速の主役。まず小さめから上げて終端速度を見る）
+J1_MAX_DRIVE_TORQUE_BASE = 0.20 # 駆動トルク上限
+J1_MIN_FRICTION_TORQUE = 0.15   # 静止摩擦を破る最低トルク（＝フェードの下限クランプ値でもある）
+J1_STATIC_VEL = 0.02            # これ以下を「ほぼ静止」とみなしフロアを効かせる
+J1_DECEL_ZONE = 0.02            # ★ フェードは広げない（食い殺し回避）。減速は D 項が担う
+J1_DEFORM_VEL_GATE = 0.03       # ★ サーボ受け渡し時の残留速度上限（速度ゲート）
+J1_DEFORM_TIMEOUT = 15.0        # ★ 変形フェーズのデッドロック回避タイムアウト [s]
 
 JOINT_CONTROLLERS = {
     'joint1': "/hydrus_xi/servo_controller/joints/controller1/simulation",
@@ -191,40 +202,43 @@ class HydrusXiDeformationSequencer:
 
     def _calculate_target_moment_joint1(self):
         """
-        Joint 1 の空力変形用モーメント計算
-        符号付きトルク指令で、逆向き動作を防ぐ
+        Joint 1 の空力変形用モーメント計算（PD制御）
+
+        ★ 【修正6】設計方針:
+          - 減速は速度ダンピング（- D * vel）に一本化。フェードには頼らない。
+          - 摩擦フロアは「ほぼ静止しているとき」だけ効かせ、動作中の D 項を邪魔しない。
+          - フェード(DECEL_ZONE)は広げず、上限を摩擦フロアで下限クランプして食い殺しを防ぐ。
+          - 目標近傍でも指令をゼロに絞りきらず、向き（符号）を維持したまま速度で勢いを殺す。
         """
-        angle_diff_to_final = self._get_angle_difference(self.current_q['joint1'], self.target_q['joint1'])
-        
-        P_GAIN = 0.2
-        MAX_DRIVE_TORQUE_BASE = 0.20
-        MIN_FRICTION_TORQUE = 0.15
+        angle_diff = self._get_angle_difference(self.current_q['joint1'], self.target_q['joint1'])
+        vel        = self.current_dq['joint1']
+        remaining  = abs(angle_diff)
 
-        tau_des = P_GAIN * angle_diff_to_final
-        remaining_angle = abs(angle_diff_to_final)
-        
-        if remaining_angle > ANGLE_ERROR_THRESHOLD:
-            if tau_des > 0 and tau_des < MIN_FRICTION_TORQUE:
-                tau_des = MIN_FRICTION_TORQUE
-            elif tau_des < 0 and tau_des > -MIN_FRICTION_TORQUE:
-                tau_des = -MIN_FRICTION_TORQUE
+        # --- PD 制御（P で目標へ引き、D で勢いを殺す / 行き過ぎれば能動的に逆トルク） ---
+        tau_des = J1_P_GAIN * angle_diff - J1_D_GAIN * vel
 
-        DECEL_ZONE = 0.02
-        if remaining_angle < DECEL_ZONE:
-            fade_factor = remaining_angle / DECEL_ZONE
-            dynamic_max_torque = MAX_DRIVE_TORQUE_BASE * fade_factor
-        else:
-            dynamic_max_torque = MAX_DRIVE_TORQUE_BASE
-            
-        if tau_des > dynamic_max_torque:
-            tau_des = dynamic_max_torque
-        elif tau_des < -dynamic_max_torque:
-            tau_des = -dynamic_max_torque
-        
+        # --- 摩擦フロア：ほぼ静止しているときだけ静止摩擦を破る最低トルクへ底上げ ---
+        #     （動き出したら手を出さず、D 項による減速を打ち消さない）
+        if remaining > ANGLE_ERROR_THRESHOLD and abs(vel) < J1_STATIC_VEL:
+            if 0.0 <= tau_des < J1_MIN_FRICTION_TORQUE:
+                tau_des = J1_MIN_FRICTION_TORQUE
+            elif -J1_MIN_FRICTION_TORQUE < tau_des < 0.0:
+                tau_des = -J1_MIN_FRICTION_TORQUE
+
+        # --- 減速フェード（非主役）＋ 下限クランプ ---
+        #     DECEL_ZONE は広げない。上限が摩擦フロアを割らないようにして「食い殺し」を防止。
+        faded = J1_MAX_DRIVE_TORQUE_BASE * min(1.0, remaining / J1_DECEL_ZONE)
+        dynamic_max = max(J1_MIN_FRICTION_TORQUE, faded)
+
+        if tau_des > dynamic_max:
+            tau_des = dynamic_max
+        elif tau_des < -dynamic_max:
+            tau_des = -dynamic_max
+
         if self.current_step == SequenceStep.JOINT1_DEFORM:
-            rospy.loginfo_throttle(0.5, "[Joint1Deform] angle_diff=%.4f, tau_des=%.4f, remaining=%.4f", 
-                                   angle_diff_to_final, tau_des, remaining_angle)
-            
+            rospy.loginfo_throttle(0.5, "[Joint1Deform] angle_diff=%.4f, vel=%.4f, tau_des=%.4f, remaining=%.4f",
+                                   angle_diff, vel, tau_des, remaining)
+
         return tau_des
     
     # ======================== 各ステップの実行関数 ========================
@@ -274,8 +288,21 @@ class HydrusXiDeformationSequencer:
         tau_des = self._calculate_target_moment_joint1()
         self._send_internal_moment_command(0, tau_des)
         
-        if abs(self._get_angle_difference(self.current_q['joint1'], self.target_q['joint1'])) <= ANGLE_ERROR_THRESHOLD:
-            # ★ 【修正1】モーメント制御OFF（センチネル値）
+        # ★ 【修正6】速度ゲート付き遷移：残角が閾値以下 かつ 低速 になって初めて受け渡す
+        #    （高速のままサーボへ渡して跳ねるのを防止。デッドロック回避のタイムアウトも併設）
+        remaining = abs(self._get_angle_difference(self.current_q['joint1'], self.target_q['joint1']))
+        vel = abs(self.current_dq['joint1'])
+        elapsed = (rospy.Time.now() - self.step_start_time).to_sec()
+
+        reached_and_slow = (remaining <= ANGLE_ERROR_THRESHOLD) and (vel < J1_DEFORM_VEL_GATE)
+        timed_out = elapsed >= J1_DEFORM_TIMEOUT
+
+        if reached_and_slow or timed_out:
+            if timed_out and not reached_and_slow:
+                rospy.logwarn("[HydrusXiSequencer] ⚠️ Joint 1 変形タイムアウト強制遷移 (remaining=%.4f, vel=%.4f)",
+                              remaining, vel)
+
+            # ★ 【修正1】ここで初めてモーメント制御OFF（センチネル値）＝指令をゼロにするのは受け渡し瞬間のみ
             self._send_internal_moment_command(-1, 0.0)
             self.joint_targets['joint1'] = self.current_q['joint1']
             self._send_synchronized_command()
