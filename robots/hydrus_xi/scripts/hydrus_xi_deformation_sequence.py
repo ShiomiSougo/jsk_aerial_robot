@@ -5,6 +5,11 @@
 Hydrus-Xi 連続変形シーケンス実行スクリプト（サラサラURDF・安全ソフトランディング版）
 変形順序変更版: Joint 1 (空力) ➔ Joint 2 & 3 (サーボ同時変形)
 
+★Document 1改：joint1 の制御のみ Document 2 に一致させたバージョン
+  - 変更点は「Joint 1 プリテンションの方向反転を撤去」の1点のみ
+    （Doc1 は変形方向と逆にプリロードしていたが、Doc2 に合わせて常に正方向へ）
+  - deform / stabilize は元々 Doc2 と数値的に一致しているため変更なし
+
 使用例:
   python hydrus_xi_deformation_sequence.py -0.3 1.0 -0.3
 """
@@ -12,6 +17,7 @@ Hydrus-Xi 連続変形シーケンス実行スクリプト（サラサラURDF・
 import rospy
 import sys
 import math
+import numpy as np  # ★Document 2 由来（Doc2 内でも未使用。機能には影響せず、パリティ目的でのみ追加）
 from sensor_msgs.msg import JointState
 from std_msgs.msg import Float64MultiArray
 from controller_manager_msgs.srv import SwitchController, SwitchControllerRequest
@@ -46,6 +52,7 @@ JOINT_CONTROLLERS = {
 }
 
 STEP_DURATIONS = {
+    SequenceStep.INIT: 2.0,             # ★Document 2 由来（_step_init は 5.0/10.0 のハードコード値を使うため実際には未参照）
     SequenceStep.JOINT1_PRETENSION: 2.0,
 }
 
@@ -62,6 +69,7 @@ class HydrusXiDeformationSequencer:
         full_joints = ['gimbal1', 'gimbal2', 'gimbal3', 'gimbal4', 'joint1', 'joint2', 'joint3']
         self.current_q = {name: 0.0 for name in full_joints}
         self.current_dq = {name: 0.0 for name in full_joints}
+        self.current_effort = {name: 0.0 for name in full_joints}  # ★Document 2 由来：effort も内部状態として保持
         
         self.joint_targets = {'joint1': 0.0, 'joint2': 0.0, 'joint3': 0.0}
         
@@ -87,7 +95,7 @@ class HydrusXiDeformationSequencer:
             self.joint_targets['joint2'] = self.current_q['joint2']
             self.joint_targets['joint3'] = self.current_q['joint3']
             
-            rospy.loginfo("[HydrusXiSequencer] 🟩 初期状態の受信に成功しました。")
+            rospy.loginfo("[HydrusXiSequencer] 🟩 初期状態の受信に成功しました。(q2の初期位置: %.3f)", self.current_q['joint2'])
         except rospy.ROSException:
             rospy.logwarn("[HydrusXiSequencer] ⚠️ トピックの待機がタイムアウトしました。初期値 0.0 で処理を開始します。")
 
@@ -142,6 +150,8 @@ class HydrusXiDeformationSequencer:
             if name in self.current_q:
                 self.current_q[name] = msg.position[i]
                 self.current_dq[name] = msg.velocity[i]
+                if i < len(msg.effort):                        # ★Document 2 由来：effort を記録
+                    self.current_effort[name] = msg.effort[i]
 
     def _normalize_angle(self, angle):
         while angle > math.pi: angle -= 2 * math.pi
@@ -227,11 +237,9 @@ class HydrusXiDeformationSequencer:
         duration = STEP_DURATIONS[SequenceStep.JOINT1_PRETENSION]
         progress = min(1.0, elapsed / duration)
         
-        # ★修正：プリロード（予張力）の方向を変形方向（angle_diff）と【逆】にする
-        angle_diff = self._get_angle_difference(self.current_q['joint1'], self.target_q['joint1'])
-        direction = -1.0 if angle_diff >= 0 else 1.0
-        
-        current_preload = PRELOAD_TORQUE * progress * direction
+        # ★Document 2 に一致：プリロードの方向反転を撤去し、常に正方向へかける
+        #   （Doc1 では angle_diff と逆向きにしていたが、Doc2 仕様に合わせて廃止）
+        current_preload = PRELOAD_TORQUE * progress
         self._send_internal_moment_command(0, current_preload)
         
         if elapsed >= duration:
