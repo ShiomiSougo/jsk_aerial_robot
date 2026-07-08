@@ -209,7 +209,7 @@ class HydrusXiDeformationSequencer:
             elif tau_des < 0 and tau_des > -MIN_FRICTION_TORQUE:
                 tau_des = -MIN_FRICTION_TORQUE
 
-        DECEL_ZONE = 0.075
+        DECEL_ZONE = 0.05
         if remaining_angle < DECEL_ZONE:
             fade_factor = remaining_angle / DECEL_ZONE
             dynamic_max_torque = MAX_DRIVE_TORQUE_BASE * fade_factor
