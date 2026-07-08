@@ -186,8 +186,8 @@ class HydrusXiDeformationSequencer:
         angle_diff_to_final = self._get_angle_difference(self.current_q['joint1'], self.target_q['joint1'])
         
         P_GAIN = 0.2                
-        MAX_DRIVE_TORQUE_BASE = 0.18 
-        MIN_FRICTION_TORQUE = 0.12  
+        MAX_DRIVE_TORQUE_BASE = 0.30 
+        MIN_FRICTION_TORQUE = 0.25  
 
         tau_des = P_GAIN * angle_diff_to_final
         remaining_angle = abs(angle_diff_to_final)
