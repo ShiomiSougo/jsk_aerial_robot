@@ -208,38 +208,40 @@ class HydrusXiDeformationSequencer:
 
     def update_target_angles(self, q1, q2, q3):
         """
-        ★ 【修正5・アップデート】新規目標角度受信時に状態を完全リセット
-        2回目以降も Joint1 変形中にサーボが確実に 0 になるよう、初期化順序を厳格化。
+        ★ 【完全リセット版】新規目標角度受信時にコントローラの内部バッファを強制リフレッシュ
         """
-        rospy.loginfo("[HydrusXiSequencer] 🔄 新目標の処理を開始します...")
+        rospy.loginfo("[HydrusXiSequencer] 🔄 新目標の処理を開始（コントローラ完全再起動シーケンス）...")
 
-        # 1. まず現在の実角度をターゲット値として同期バッファに完全に上書き
-        #    （古い目標角度がコントローラに送信されるのを防ぐ最重要ガード）
+        # 1. 現在の実角度をターゲット値として同期バッファに完全に上書き
         for j in self.all_joint_names:
             self.joint_targets[j] = self.current_q[j]
 
-        # 2. 一度完全に内部 moment 制御を OFF に叩き落とす
+        # 2. モーメント制御を完全に OFF
         self._send_internal_moment_command(-1, 0.0)
 
-        # 3. joint1 サーボを確実に一度 running へ戻す（実状態検証つき）
-        #    これにより、次の PRETENSION での stop が確実にクリーンな「始動 ➔ 停止」になる
+        # 3. 【核心部】一回 stop させて内部の PID 積分項（I項）を完全に叩き落とす
+        rospy.loginfo("[HydrusXiSequencer] ⚡ joint1 コントローラを強制リセット中...")
+        self._ensure_controller_state('joint1', want_running=False)
+        rospy.sleep(0.1) # ハードウェア側で完全に停止が処理されるのを待つ
+
+        # 4. 再び running 状態に戻す（これでPIDバッファが完全にゼロから再スタートする）
         self._ensure_controller_state('joint1', want_running=True)
 
-        # 4. 現在角ターゲットを確実にパブリッシュしてコントローラの偏差をゼロクリア
+        # 5. 現在角を即座に送り込んで初期偏差をゼロにする
         self._send_synchronized_command()
-        rospy.sleep(0.1) # コントローラ内部のバッファが更新されるのをわずかに待つ
+        rospy.sleep(0.05)
 
-        # 5. ターゲット配列を次の目標値に更新
+        # 6. ターゲット配列を次の目標値に更新
         self.target_q['joint1'] = q1
         self.target_q['joint2'] = q2
         self.target_q['joint3'] = q3
 
-        # 6. ステートマシンの完全初期化
+        # 7. ステートマシンの完全初期化
         self.current_step = SequenceStep.INIT
         self.step_start_time = rospy.Time.now()
         self.stabilize_loop_count = 0
         
-        rospy.loginfo("[HydrusXiSequencer] 🟩 新目標受理完了: q1=%.3f, q2=%.3f, q3=%.3f。INIT から再始動。", q1, q2, q3)
+        rospy.loginfo("[HydrusXiSequencer] 🟩 コントローラ強制リフレッシュ完了。q1=%.3f, q2=%.3f, q3=%.3f で再始動。", q1, q2, q3)
         
     def _joint_state_callback(self, msg):
         for i, name in enumerate(msg.name):
@@ -354,22 +356,10 @@ class HydrusXiDeformationSequencer:
         progress = min(1.0, elapsed / duration)
         
         current_preload = PRELOAD_TORQUE * progress
-        # ★ 【修正1】target_joint_index=0 でモーメント制御ON
         self._send_internal_moment_command(0, current_preload)
         
         if elapsed >= duration:
-            # ================================================================
-            # 💡 【重要改善】コントローラを stop する前に、ハードウェアバッファを0で上書きする
-            # ================================================================
-            # 1. モーメント制御を一旦 OFF
-            self._send_internal_moment_command(-1, 0.0)
-            
-            # 2. 位置制御コントローラに対して、一時的に effort=0 を強制的に送りつけるか、
-            #    あるいは単一メッセージで完全にクリアシグナルを送る。
-            #    （ROS Controlのバグ回避のため、空のコマンド、または一瞬だけクリア処理）
-            # ================================================================
-
-            # ★ 【修正5】stop が「実際に stopped になったか」を検証してから遷移
+            # 実状態を検証してから DEFORM へ遷移
             if self._ensure_controller_state('joint1', want_running=False):
                 rospy.loginfo("[HydrusXiSequencer] Step 1 完了 ➔ Step 2 (Joint 1 純空力変形開始)")
                 self.current_step = SequenceStep.JOINT1_DEFORM
