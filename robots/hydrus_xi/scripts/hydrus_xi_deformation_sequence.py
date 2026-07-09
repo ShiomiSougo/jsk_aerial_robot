@@ -343,7 +343,7 @@ class HydrusXiDeformationSequencer:
 
         P_GAIN = 0.12
         MAX_DRIVE_TORQUE_BASE = 0.18
-        MIN_FRICTION_TORQUE = 0.075
+        MIN_FRICTION_TORQUE = 0.12
 
         tau_des = P_GAIN * angle_diff_to_final
         remaining_angle = abs(angle_diff_to_final)
