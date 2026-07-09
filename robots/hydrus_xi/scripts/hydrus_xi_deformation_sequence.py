@@ -42,20 +42,17 @@ Hydrus-Xi 連続変形シーケンス実行スクリプト（サラサラURDF・
     (c) |angle_diff| <= ANGLE_ERROR_THRESHOLD なら PRETENSION / DEFORM を丸ごとスキップ。
         （旧実装ではラン3のように、動かす必要が無くても +0.40 N・m を 2 秒印加していた）
 
-  ■ 未対応（既知の問題）
-    - プリロード中に joint_targets を毎ループ current_q で上書きするため
-      サーボ偏差が 0 になり復元力が消え、関節がクリープする
-      （実測: ラン2 で 0.20 rad, ラン3 で 0.12 rad）
+  ■ 未対応（別途指示があれば対応）
     - DEFORM 終了条件に速度判定が無く、離脱速度ぶんの惰行が残る
-      （実測: ラン2 で解放反動により q1 が 0.116 rad 逆走、終端誤差 0.075）
     - DECEL_ZONE == ANGLE_ERROR_THRESHOLD == 0.05 のため減速帯が実質1ループで抜ける
-    - STABILIZE が惰行位置をそのまま保持し、目標角へ引き戻さない
+    - プリロード中に joint_targets を毎ループ current_q で上書きするため、
+      サーボ偏差が消えて関節がクリープする
     - C++ 側の target_joint_index_ / tau_des_target_ / has_moment_command_ が
       spinner スレッドと plan_thread_ 間で無保護（COBYLA 評価中に切り替わり得る）
     - C++ 側でジンバル角が正規化されず run をまたいで単調ドリフトする
 
 使用例:
-  python hydrus_xi_deformation_sequence.py 0.9 0.9 0.9
+  python hydrus_xi_deformation_sequence.py -0.3 1.0 -0.3
 """
 
 import rospy
