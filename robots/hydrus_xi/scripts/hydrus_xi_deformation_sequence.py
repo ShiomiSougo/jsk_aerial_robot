@@ -85,7 +85,7 @@ STABILIZE_TIMEOUT = 4.0
 
 # ★ 【修正7】プリロード値は _calculate_target_moment() の戻り値へのランプに置き換えたため未使用。
 #            互換のため定数のみ残置する。
-PRELOAD_TORQUE = 0.40  # DEPRECATED: 現在どこからも参照されない
+PRELOAD_TORQUE = 0.20  # DEPRECATED: 現在どこからも参照されない
 
 JOINT_CONTROLLERS = {
     'joint1': "/hydrus_xi/servo_controller/joints/controller1/simulation",
@@ -341,7 +341,7 @@ class HydrusXiDeformationSequencer:
         """
         angle_diff_to_final = self._get_angle_difference(self.current_q[joint_name], self.target_q[joint_name])
 
-        P_GAIN = 0.2
+        P_GAIN = 0.12
         MAX_DRIVE_TORQUE_BASE = 0.18
         MIN_FRICTION_TORQUE = 0.12
 
