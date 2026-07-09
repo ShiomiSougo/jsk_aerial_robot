@@ -1,6 +1,7 @@
 #include <hydrus_xi/hydrus_xi_under_actuated_navigation.h>
 #include <std_msgs/Float64MultiArray.h>
 #include <std_msgs/Float64.h>
+#include <cmath>
 
 using namespace aerial_robot_navigation;
 
@@ -9,30 +10,66 @@ namespace
   int cnt = 0;
   int invalid_cnt = 0;
 
-  // 共通ペナルティ計算用関数
   // ====================================================================
-  // ★ 【修正3】コメント修正：実際は二乗ペナルティで非微分最適化用
-  // COBYLA（微分不要）なので勾配情報は使われない。
-  // 行き過ぎ/不足の区別が必要ならば、「差分の符号を持たせた項」を
-  // 目的関数に直接組み込むか、LD_SLSQP等の勾配法に変更する必要がある。
+  // ★ 【修正7-c・最重要】非対称モーメントペナルティ
+  //
+  // 【問題】
+  //   従来は対称な二乗誤差 w_tau * diff^2 のみだったため、
+  //   computeExactInternalMoment() が持つロータ反トルク由来の
+  //   構造的な負バイアス（mz_local = kappa*f*dir*cos(beta),
+  //   dir が i=1,2,3 で -,+,- となり総和が負に偏る）に負けて、
+  //   tau_des > 0 のときに tau が負のまま最適解になっていた。
+  //   結果、正方向変形（0.3 -> 0.9）で joint1 の動きが逆転していた。
+  //
+  // 【対策】
+  //   (1) 符号違反（tau が tau_des と逆向き）に、二乗＋線形の
+  //       極端に重いペナルティを課す。線形項は COBYLA（微分不要法）が
+  //       負側の谷から抜け出すための「勾配の壁」として機能する。
+  //   (2) 正しい向きへのオーバーシュートは減免する。関節を動かすのに
+  //       必要なのは「正確な tau」ではなく「正しい向きの十分な tau」。
   // ====================================================================
-  double computeMomentPenalty(HydrusXiUnderActuatedNavigator *planner, const std::vector<double> &x, boost::shared_ptr<HydrusTiltedRobotModel> robot_model)
+  double computeMomentPenalty(HydrusXiUnderActuatedNavigator *planner,
+                              const std::vector<double> &x,
+                              boost::shared_ptr<HydrusTiltedRobotModel> robot_model)
   {
-      // ★ 【修正1・最重要】has_moment_command_フラグが立たない限りペナルティ無効
+      // has_moment_command_ フラグが立たない限りペナルティ無効
       if (!planner->hasMomentCommand() || planner->getTargetJointIndex() < 0) {
           return 0.0;
       }
 
-      double current_tau = planner->computeExactInternalMoment(x, robot_model);
-      double diff = current_tau - planner->getTauDesTarget();
-      double w_tau = 2000.0;
-      
-      if (planner->getTargetJointIndex() == 2) {
-          ROS_INFO_THROTTLE(0.5, "joint3 penalty: CurrentTau=%.4f, TargetTau=%.4f, Diff=%.6f, DiffSq=%.6f, penalty=%.6f",
-              current_tau, planner->getTauDesTarget(), diff, diff*diff, w_tau * (diff * diff));
+      const double tau     = planner->computeExactInternalMoment(x, robot_model);
+      const double tau_des = planner->getTauDesTarget();
+      const double diff    = tau - tau_des;
+
+      const double w_tau            = 2000.0;   // 基本の二乗誤差重み
+      const double w_sign_quad      = 2.0e5;    // 符号違反の二乗ペナルティ
+      const double w_sign_lin       = 1.0e4;    // 符号違反の線形ペナルティ（勾配の壁）
+      const double overshoot_relief = 0.90;     // 正方向オーバーシュートの減免率
+
+      double penalty = w_tau * diff * diff;
+
+      if (std::fabs(tau_des) > 1e-6) {
+          const double s = (tau_des > 0.0) ? 1.0 : -1.0;
+
+          // ★ 符号が逆（tau が tau_des と反対向き）なら極端に重いペナルティ
+          const double violation = -s * tau;   // >0 で符号違反
+          if (violation > 0.0) {
+              penalty += w_sign_quad * violation * violation;
+              penalty += w_sign_lin  * violation;
+          }
+
+          // ★ 正しい向きに行き過ぎた分は軽く（動かすのに害はない）
+          const double overshoot = s * tau - s * tau_des;
+          if (overshoot > 0.0) {
+              penalty -= overshoot_relief * w_tau * overshoot * overshoot;
+          }
       }
-      
-      return w_tau * (diff * diff);
+
+      ROS_INFO_THROTTLE(0.5,
+          "[MomentPenalty] joint%d: tau=%.4f, tau_des=%.4f, diff=%.4f, penalty=%.3f",
+          planner->getTargetJointIndex() + 1, tau, tau_des, diff, penalty);
+
+      return penalty;
   }
 
   double maximizeFCTMin(const std::vector<double> &x, std::vector<double> &grad, void *planner_ptr)
@@ -40,7 +77,7 @@ namespace
     cnt++;
     HydrusXiUnderActuatedNavigator *planner = reinterpret_cast<HydrusXiUnderActuatedNavigator*>(planner_ptr);
     auto robot_model = planner->getRobotModelForPlan();
-    
+
     KDL::JntArray joint_positions = planner->getJointPositionsForPlan();
     for(int i = 0; i < x.size(); i++)
       joint_positions(planner->getControlIndices().at(i)) = x.at(i);
@@ -58,20 +95,24 @@ namespace
 
     Eigen::VectorXd force_v = robot_model->getStaticThrust();
     double average_force = force_v.sum() / force_v.size();
-    double variance_val = 0; 
+    double variance_val = 0;
 
     for(int i = 0; i < force_v.size(); i++)
       variance_val += ((force_v(i) - average_force) * (force_v(i) - average_force));
 
     variance_val = sqrt(variance_val / force_v.size());
 
-    double objective_base = planner->getForceNormWeight() * robot_model->getMass() / force_v.norm() 
-                          + planner->getForceVariantWeight() / variance_val 
+    double objective_base = planner->getForceNormWeight() * robot_model->getMass() / force_v.norm()
+                          + planner->getForceVariantWeight() / variance_val
                           + planner->getFCTMinWeight() * robot_model->getFeasibleControlTMin();
 
-    objective_base -= computeMomentPenalty(planner, x, robot_model);
+    // ★ 【修正7-d】モーメント指令中は基本項を弱め、モーメント追従を支配的にする。
+    //    基本項とペナルティが同オーダーで競合すると、COBYLA が「基本項を稼ぐ」
+    //    折衷解に落ち、tau の符号が反転したままになるため。
+    //    姿勢と可制御性は baselinkRotConstraint / fcTMinConstraint が担保する。
+    const double base_scale = planner->hasMomentCommand() ? 0.05 : 1.0;
 
-    return objective_base; 
+    return base_scale * objective_base - computeMomentPenalty(planner, x, robot_model);
   }
 
   double maximizeMinYawTorque(const std::vector<double> &x, std::vector<double> &grad, void *planner_ptr)
@@ -92,7 +133,7 @@ namespace
         if(planner->getPlanVerbose()) ROS_WARN("nlopt, robot stability is invalid (cnt: %d)", invalid_cnt);
         return 0;
     }
-    
+
     invalid_cnt = 0;
 
     Eigen::VectorXd gradient = robot_model->calcWrenchMatrixOnCoG().row(5).transpose();
@@ -129,20 +170,21 @@ namespace
 
     Eigen::VectorXd force_v = robot_model->getStaticThrust();
     double average_force = force_v.sum() / force_v.size();
-    double variance_val = 0; 
+    double variance_val = 0;
 
     for(int i = 0; i < force_v.size(); i++)
       variance_val += ((force_v(i) - average_force) * (force_v(i) - average_force));
 
     variance_val = sqrt(variance_val / force_v.size());
 
-    double objective_base = planner->getForceNormWeight() * robot_model->getMass() / force_v.norm() 
-                          + planner->getForceVariantWeight() / variance_val 
+    double objective_base = planner->getForceNormWeight() * robot_model->getMass() / force_v.norm()
+                          + planner->getForceVariantWeight() / variance_val
                           + planner->getYawTorqueWeight() * planner->getMaxMinYaw();
 
-    objective_base -= computeMomentPenalty(planner, x, robot_model);
+    // ★ 【修正7-d】モーメント指令中は基本項を弱める（maximizeFCTMin と同様）
+    const double base_scale = planner->hasMomentCommand() ? 0.05 : 1.0;
 
-    return objective_base; 
+    return base_scale * objective_base - computeMomentPenalty(planner, x, robot_model);
   }
 
   double baselinkRotConstraint(const std::vector<double> &x, std::vector<double> &grad, void *planner_ptr)
@@ -196,7 +238,7 @@ void HydrusXiUnderActuatedNavigator::initialize(ros::NodeHandle nh, ros::NodeHan
   target_joint_index_ = -1;
   tau_des_target_ = 0.0;
   has_moment_command_ = false;
-  
+
   moment_command_sub_ = nh_.subscribe(
       "/hydrus_xi/target_internal_moment",
       1,
@@ -327,6 +369,13 @@ bool HydrusXiUnderActuatedNavigator::plan()
           delta_angle = M_PI;
         }
 
+      // ★ 【修正7-e】モーメント指令中は探索範囲を広げ、
+      //    符号が逆の局所解（負トルクの谷）から脱出できるようにする。
+      if(has_moment_command_ && target_joint_index_ >= 0)
+        {
+          delta_angle = M_PI;
+        }
+
       for(int i = 0; i < opt_gimbal_angles_.size(); i++)
          {
            lb.at(i) = opt_gimbal_angles_.at(i) - delta_angle;
@@ -377,6 +426,20 @@ bool HydrusXiUnderActuatedNavigator::plan()
       robot_model_for_plan_->getCogDesireOrientation<KDL::Rotation>().GetRPY(roll, pitch, yaw);
 
       if(prev_opt_gimbal_angles_.size() == 0) prev_opt_gimbal_angles_ = opt_gimbal_angles_;
+
+      // ★ 【修正7-f】最適化後、tau の符号が指令と逆なら警告を出す。
+      //    到達不能なのか局所解なのかを切り分けるための診断ログ。
+      if(has_moment_command_ && target_joint_index_ >= 0)
+        {
+          double tau_after = computeExactInternalMoment(opt_gimbal_angles_, robot_model_for_plan_);
+          if(std::fabs(tau_des_target_) > 1e-6 && tau_after * tau_des_target_ < 0.0)
+            {
+              ROS_WARN_THROTTLE(1.0,
+                  "[MomentSign] joint%d: 符号不一致! tau=%.4f vs tau_des=%.4f "
+                  "(局所解か到達不能。gimbal_delta_angle / w_sign_* を要調整)",
+                  target_joint_index_ + 1, tau_after, tau_des_target_);
+            }
+        }
 
       if(plan_verbose_)
         {
@@ -435,10 +498,10 @@ void HydrusXiUnderActuatedNavigator::momentCommandCallback(
     const std_msgs::Float64MultiArray::ConstPtr& msg)
 {
   // ====================================================================
-  // ★ 【修正1・最重要】モーメント命令の解析
+  // ★ 【修正1】モーメント命令の解析
   // msg->data[0] = target_joint_index (-1=なし, 0,1,2,...=対象関節)
   // msg->data[1] = tau_des_target (目標モーメント [N・m])
-  // 
+  //
   // target_joint_index_ = -1 のとき has_moment_command_ = false
   // それ以外のとき has_moment_command_ = true
   // ====================================================================
@@ -485,14 +548,14 @@ double HydrusXiUnderActuatedNavigator::computeExactInternalMoment(
     return 0.0;
   }
 
-  const double beta = 0.34906585; 
-  const double kappa = 0.0182;    
-  const double dx = 0.3016;       
-  const double L = 0.6; 
+  const double beta = 0.34906585;
+  const double kappa = 0.0182;
+  const double dx = 0.3016;
+  const double L = 0.6;
 
   std::vector<Eigen::Vector3d> P_L(num_rotors);
   std::vector<double> theta(num_rotors);
-  
+
   P_L[0] = Eigen::Vector3d(0, 0, 0);
   theta[0] = 0.0;
 
@@ -505,14 +568,14 @@ double HydrusXiUnderActuatedNavigator::computeExactInternalMoment(
   double tau_internal = 0.0;
 
   for (int i = target_joint_index_ + 1; i < num_rotors; ++i) {
-    
+
     Eigen::Vector3d P_rot = P_L[i] + Eigen::Vector3d(dx * std::cos(theta[i]), dx * std::sin(theta[i]), 0.0);
-    Eigen::Vector3d r = P_rot - P_joint; 
+    Eigen::Vector3d r = P_rot - P_joint;
 
     double f = thrusts(i);
     double psi = gimbal_angles[i];
-    
-    double dir = (i % 2 == 0) ? 1.0 : -1.0; 
+
+    double dir = (i % 2 == 0) ? 1.0 : -1.0;
     double T_yaw = kappa * f * dir;
 
     double sin_b = std::sin(beta), cos_b = std::cos(beta);
