@@ -74,7 +74,7 @@ GIMBAL1_MAG  = 0.8      # [rad] 固定するジンバル角の「大きさ」（
 GIMBAL1_SIGN = +1.0     # 符号規約が未同定。実測後にここを反転させる
 
 GIMBAL_ERR_THRESH = 0.02   # [rad] スルー完了判定
-FC_T_MIN_REQUIRED = 0.2    # [Nm]  これを下回ったら中断（sweep モードでは無効）本当は1くらいが妥当
+FC_T_MIN_REQUIRED = 0.01    # [Nm]  これを下回ったら中断（sweep モードでは無効）本当は1くらいが妥当
 
 ANGLE_ERROR_THRESHOLD = 0.03   # [rad] 関節到達判定
 JOINT_RAMP_RATE = 0.0125       # [rad/loop] = 0.25 rad/s @ 20 Hz（論文の joint velocity）
