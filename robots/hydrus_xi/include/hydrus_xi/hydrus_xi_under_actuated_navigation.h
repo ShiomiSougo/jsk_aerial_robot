@@ -13,7 +13,7 @@
  * notice, this list of conditions and the following disclaimer.
  * * Redistributions in binary form must reproduce the above
  * copyright notice, this list of conditions and the following
- * disclaimer in the documentation and/o2r other materials provided
+ * disclaimer in the documentation and/or other materials provided
  * with the distribution.
  * * Neither the name of the JSK Lab nor the names of its
  * contributors may be used to endorse or promote products derived
@@ -40,8 +40,10 @@
 #include <hydrus/hydrus_tilted_robot_model.h>
 #include <nlopt.hpp>
 #include <OsqpEigen/OsqpEigen.h>
-// ===== 【新規追加】内部モーメント指令用 =====
-#include <std_msgs/Float64MultiArray.h> 
+
+/* ★ 固定ジンバル指令・状態フィードバック用 */
+#include <std_msgs/Float64MultiArray.h>
+#include <mutex>
 
 namespace aerial_robot_navigation
 {
@@ -76,18 +78,16 @@ namespace aerial_robot_navigation
 
     void setMaxMinYaw(const double max_min_yaw) { max_min_yaw_ = max_min_yaw;}
 
-    // ===== 【新規追加】内部モーメント制御用パブリックアクセッサー =====
-    inline int getTargetJointIndex() const { return target_joint_index_; }
-    inline double getTauDesTarget() const { return tau_des_target_; }
-    inline bool hasMomentCommand() const { return has_moment_command_; }
-    inline double getTargetMomentWeight() const { return target_moment_weight_; }
+    /* ★ nlopt の自由変数 x を全ジンバル角ベクトルへ展開する。
+     *   無名名前空間の applyGimbalAngles() から planner-> 経由で呼ぶため public。 */
+    std::vector<double> composeGimbalAngles(const std::vector<double>& x);
 
   private:
     ros::Publisher gimbal_ctrl_pub_;
     std::thread plan_thread_;
     boost::shared_ptr<HydrusTiltedRobotModel> robot_model_for_plan_;
     OsqpEigen::Solver yaw_range_lp_solver_;
-    boost::shared_ptr<nlopt::opt> vectoring_nl_solver_;
+    boost::shared_ptr<nlopt::opt> vectoring_nl_solver_;  // 未使用（互換のため残置）
 
     KDL::JntArray joint_positions_for_plan_;
     std::vector<std::string> control_gimbal_names_;
@@ -111,25 +111,40 @@ namespace aerial_robot_navigation
 
     void rosParamInit() override;
 
-    // ===== 【新規追加】内部モーメント制御用メンバ変数・メソッド =====
-    int target_joint_index_;              // 対象関節インデックス (0=Joint1, 1=Joint2, 2=Joint3, -1=なし)
-    double tau_des_target_;               // 目標内部モーメント [N⋅m]
-    bool has_moment_command_;             // コマンド受信フラグ
-    double target_moment_weight_;         // ペナルティ重み（ROS パラメータから読み込み）
+    /* ================= ★ 固定ジンバル関連（ここから） =================
+     *
+     * 指定した 1 つのジンバル（既定 "gimbal1"）を nlopt の最適化変数から
+     * 外し、外部から与えた固定角として扱う。最適化次元は N -> N-1 に落ちる。
+     * これにより内部モーメント M1 は静止推力 lambda_1 のスカラー倍として
+     * 一意に決まり、ペナルティ項によるモーメント制御が不要になる。
+     */
+    ros::Subscriber fix_gimbal_cmd_sub_;    // ~/fixed_gimbal_cmd   [enable, angle]
+    ros::Publisher  fix_gimbal_state_pub_;  // ~/fixed_gimbal_state [en, tgt, cur, fc_t_min, err]
 
-    ros::Subscriber moment_command_sub_;  // /hydrus_xi/target_internal_moment の Subscriber
+    boost::shared_ptr<nlopt::opt> vectoring_nl_solver_full_;     // N   次元
+    boost::shared_ptr<nlopt::opt> vectoring_nl_solver_reduced_;  // N-1 次元
 
-    void momentCommandCallback(const std_msgs::Float64MultiArray::ConstPtr& msg);
-    
-    double computeInternalMomentZ(
-        const std::vector<double>& x,
-        const boost::shared_ptr<HydrusTiltedRobotModel>& robot_model_ptr);
-        
-    std::vector<double> extractThrustsFromOptVars(
-        const std::vector<double>& x,
-        const boost::shared_ptr<HydrusTiltedRobotModel>& robot_model_ptr);
-        
-    std::vector<double> extractGimbalsFromOptVars(
-        const std::vector<double>& x);
+    /* callback スレッドが書き、plan スレッドが読む。要保護 */
+    std::mutex fix_mutex_;
+    bool   fix_gimbal_enabled_;
+    double fix_gimbal_target_;
+
+    /* plan スレッド専用 */
+    double fix_gimbal_current_;    // レート制限をかけた実効固定角
+    int    fix_gimbal_idx_;        // control_gimbal_names_ 内での位置（無ければ -1）
+    double fix_gimbal_slew_rate_;  // [rad/s]
+    double plan_du_;               // 1 / plan_freq
+    std::string fix_gimbal_name_;
+
+    /* plan() 冒頭で確定させ、nlopt 評価中は不変とみなすスナップショット */
+    bool   active_fix_enabled_;
+    int    active_fix_idx_;
+    double active_fix_angle_;
+
+    double last_fc_t_min_;
+
+    void setupSolver(boost::shared_ptr<nlopt::opt> solver);
+    void fixedGimbalCmdCallback(const std_msgs::Float64MultiArray::ConstPtr& msg);
+    /* ================= ★ 固定ジンバル関連（ここまで） ================= */
   };
 };
