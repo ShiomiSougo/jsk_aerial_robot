@@ -184,6 +184,8 @@ HydrusXiUnderActuatedNavigator::HydrusXiUnderActuatedNavigator():
     fix_gimbal_target_(0.0),
     fix_gimbal_current_(0.0),
     fix_gimbal_idx_(-1),
+    fix_gimbal_slew_rate_(0.5),
+    plan_du_(0.05),
     active_fix_enabled_(false),
     active_fix_idx_(-1),
     active_fix_angle_(0.0),
@@ -418,6 +420,13 @@ bool HydrusXiUnderActuatedNavigator::plan()
     enable = fix_gimbal_enabled_;
     target = fix_gimbal_target_;
   }
+
+  /* 保険: reduced ソルバが無い構成では固定モードに入らない */
+  if(enable && (fix_gimbal_idx_ < 0 || !vectoring_nl_solver_reduced_))
+    {
+      ROS_WARN_THROTTLE(1.0, "[navi] gimbal fixing unavailable, fall back to full optimization");
+      enable = false;
+    }
 
   if(enable && !active_fix_enabled_)
     {
