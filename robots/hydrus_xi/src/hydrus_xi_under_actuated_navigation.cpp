@@ -535,7 +535,7 @@ bool HydrusXiUnderActuatedNavigator::plan()
                     : (fix_gimbal_idx_ >= 0 ? opt_gimbal_angles_.at(fix_gimbal_idx_) : 0.0);
   state_msg.data[3] = last_fc_t_min_;                           // feasible control torque min
   state_msg.data[4] = active_fix_enabled_
-                    ? fabs(normalizeAngle(target - active_fix_angle_)) : 0.0;
+                    ? fabs(normalizeAngle(target - active_fix_angle_)) : M_PI;
   fix_gimbal_state_pub_.publish(state_msg);
 
   prev_opt_gimbal_angles_ = opt_gimbal_angles_;
