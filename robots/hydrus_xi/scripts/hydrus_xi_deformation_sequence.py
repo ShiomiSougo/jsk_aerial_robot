@@ -2,79 +2,81 @@
 # -*- coding: utf-8 -*-
 
 """
-Hydrus-Xi 変形シーケンス（gimbal1 固定・joint1 サーボ駆動版）rev.3
+Hydrus-Xi 変形シーケンス（gimbal1 固定・joint1 サーボ駆動版）rev.4
 
 目的:
   psi_1 (gimbal1 の vectoring 角) を固定したまま joint1 の変形が成立するかを検証する。
   joint1 はサーボで駆動するため、失敗しても関節が暴走しない。
 
 --------------------------------------------------------------------------
-rev.3 での変更（rev.2 からの差分）
+rev.4 での変更（rev.3 からの差分）
+--------------------------------------------------------------------------
+[変更G] 変形順序を joint2,3 -> joint1 に入れ替えた。
+
+        rev.3 までは joint1 -> joint2,3 の順で、joint1 を先に動かしていた。
+        しかし開始形態が直線に近い場合（例: q=(-0.9, 0.3, 0.3) から q1 を戻す）、
+        joint2,3 が折りたたまれたまま joint1 だけを動かすと、変形の途中で
+        line-shape 特異形態 (S2) を通過する。このとき joint2,3,4 が密集して
+        モーメントアーム d が短く、psi の選び方に関わらず sin(beta)*lambda*d の
+        横力で tau_min を支えきれず 0 に落ちて abort していた。
+
+        実測（rev.3 のログ）:
+          開始 q1=+1.57（展開形態）-> joint1 変形は最後まで通る
+          開始 q1=-0.87（直線近傍）-> psi1 を a/b どちらに固定しても
+                                       q1=-0.5 ~ -0.77 で tau_min=0 -> abort
+
+        joint2,3 を先に展開して d を稼いでおけば、その後 joint1 を動かす際に
+        通過する形態が特異点から遠ざかる、というのが本変更の狙い。
+
+        新しい順序:
+          (a) joint2,3 を従来どおり変形（psi1 自由・4次元フル最適化）
+          (b) 静定
+          (c) psi1 を固定角へスルー
+          (d) 静定
+          (e) joint1 を変形（psi1 固定）
+          (f) 静定
+          (g) psi1 を解放し収束を待つ
+          (h) 完了（psi1 自由）
+
+[変更H] _pick_gimbal_target を「近い方（nearest）」に戻した。
+        rev.3 で試した cos<0 選択は、開始形態が直線近傍のときは逆に谷を
+        深くする（cos<0 でも abort する）ことが実測で分かり、cos の符号で
+        分枝の良し悪しは決まらないと結論した。tau_min=0 の主因は分枝選択では
+        なく変形順序（特異点通過）だったため、選択ロジックは元の nearest に戻す。
+        GIMBAL1_FORCE_BRANCH による強制は検証用に残す。
+
+--------------------------------------------------------------------------
+rev.3 での変更（継続）
 --------------------------------------------------------------------------
 [変更D] joint1 の変形が終わったら psi_1 を最適化に返す。
-        rev.2 は joint2,3 の変形中もシーケンス完了後も psi_1 を固定し続けていた。
-        実測では固定によって tau_min が 5.03 -> 4.04 Nm と約 1.0 Nm 損している。
-        joint1 が目標に着いた時点で凍らせておく理由はないので解放する。
-
-[追加E] GIMBAL_RELEASE ステップ。
-        解放直後、C++ 側は固定角からウォームスタートして
-        +-gimbal_delta_angle_ (既定 0.2 rad/周期) で最適解へ歩いていく。
-        例: -2.342 -> +3.19 なら 2.5 rad = 12 周期以上かかる。
-        さらに stabilityCheck が落ちると delta_angle が pi にリセットされ、
-        1 周期で大きく跳ぶ。
-
-        したがって解放後は
-          - C++ が fix_enabled=False を返した
-          - psi_1 の変化率が十分小さくなった
-          - tau_min が RELEASE_FC_T_MIN_OK 以上に回復した
-          - joint の角速度が静止した
-        の 4 条件が揃うまで joint2,3 の変形を始めない。
-
-[修正F] 課題(8): `if self.fix_enabled:` で再送を判定していたため、
-        C++ 側が一度でも False を返すと二度と固定に戻れなかった。
-        Python 側の意図フラグ self.fix_active で判定し、
-        fix_enabled は「C++ が受理したかの照合」にのみ使う。
+[追加E] GIMBAL_RELEASE ステップ（解放後の psi1 収束待ち）。
+[修正F] 課題(8): 再送判定を Python 側の意図フラグ self.fix_active で行う。
 
 --------------------------------------------------------------------------
 rev.2 での修正（継続）
 --------------------------------------------------------------------------
 [修正A] 固定完了の判定に fix_enabled を必須条件として加える。
-
-[修正B] 等価解の選択。生成モーメントは
-            M1(psi1) = -A sin(psi1) + c
-        であり sin(a) = sin(pi - a) なので psi1 = a と psi1 = pi - a は
-        同じ joint1 モーメントを生む。現在角に近いほうを選ぶ。
-
-        符号規約（本 rev で確定させたマッピング）:
-            d1 = target_q1 - current_q1
-            d1 < 0 (sign=-1): a = +0.3,  b = pi - 0.3
-            d1 > 0 (sign=+1): a = -0.3,  b = 0.3 - pi   (= norm(pi - (-0.3)))
-        a と b は sin が等しいので joint1 モーメントは同一。
-        cos(a) と cos(pi - a) は符号が逆なので、直交する横力の向きは反転し、
-        lambda_s / CoG フレーム / tau_min はすべて別物になる。
-        GIMBAL1_FORCE_BRANCH で分枝を強制できるようにしてある。
-
-[追加C] sweep モード。joint を一切動かさず psi1 を一周させ、
-        (psi1, tau_min) を 20 Hz で流す。
+[修正B] 等価解の選択（sin(a)=sin(pi-a) の 2 分枝）。
+[追加C] sweep モード。
 
             rosrun hydrus_xi hydrus_xi_gimbal_fixed_sequence.py --sweep
             rostopic echo -p /hydrus_xi/fixed_gimbal_state > sweep.csv
 
 --------------------------------------------------------------------------
-シーケンス（通常モード）
+シーケンス（通常モード, rev.4）
 --------------------------------------------------------------------------
   (1) 開始・初期静定
-  (2) 変形方向 sign(q1_target - q1_current) を受け取る
-  (3) gimbal1 を固定角へスルーし、最適化変数から外す
-  (4) 静定待ち
-  (5) joint1 をサーボで変形（gimbal1 は固定のまま）
-  (6) joint1 変形終了・静定待ち
-  (7) gimbal1 を解放し、psi_1 が最適解へ収束するまで静定待ち   <- rev.3 で追加
-  (8) joint2, 3 を従来どおりサーボ変形（psi_1 は自由）
-  (9) 静定待ち・完了（gimbal1 は自由のまま）
+  (2) joint2,3 を従来どおり変形（psi1 自由）
+  (3) joint2,3 静定
+  (4) 変形方向 sign(q1_target - q1_current) を受け取り、gimbal1 を固定角へスルー
+  (5) 固定後の静定
+  (6) joint1 を変形（gimbal1 固定）
+  (7) joint1 変形終了・静定
+  (8) gimbal1 を解放し、psi_1 が最適解へ収束するまで静定待ち
+  (9) 完了（gimbal1 は自由のまま）
 
 使用例:
-  rosrun hydrus_xi hydrus_xi_gimbal_fixed_sequence.py -0.6 0.9 0.9
+  rosrun hydrus_xi hydrus_xi_gimbal_fixed_sequence.py 1.0 1.0 1.0
   rosrun hydrus_xi hydrus_xi_gimbal_fixed_sequence.py --sweep
 """
 
@@ -88,13 +90,13 @@ from enum import Enum
 
 class Step(Enum):
     INIT              = 0
-    GIMBAL_FIX        = 1
-    GIMBAL_STABILIZE  = 2
-    JOINT1_SERVO      = 3
-    JOINT1_STABILIZE  = 4
-    GIMBAL_RELEASE    = 5      # rev.3 追加
-    JOINT23_SERVO     = 6
-    JOINT23_STABILIZE = 7
+    JOINT23_SERVO     = 1      # rev.4: 先に joint2,3 を動かす
+    JOINT23_STABILIZE = 2
+    GIMBAL_FIX        = 3
+    GIMBAL_STABILIZE  = 4
+    JOINT1_SERVO      = 5
+    JOINT1_STABILIZE  = 6
+    GIMBAL_RELEASE    = 7
     COMPLETE          = 8
     SWEEP             = 9
 
@@ -103,10 +105,10 @@ class Step(Enum):
 GIMBAL1_MAG  = 0.3      # [rad] 固定するジンバル角の「大きさ」（正弦の引数として）
 GIMBAL1_SIGN = +1.0     # 符号規約。実測後にマッピングが逆だったらここを反転させる
 
-# 分枝の強制。None なら「現在角に近いほう」を自動選択（rev.2 の挙動）
+# 分枝の強制。None なら「現在角に近いほう（nearest）」を自動選択。
 #   'a' -> psi1 = a       (= -MAG * SIGN * sign)
 #   'b' -> psi1 = pi - a
-# 仮説検証（cos の符号が tau_min に効くか）のために使う。
+# 検証用に残す。通常は None。
 GIMBAL1_FORCE_BRANCH = None
 
 GIMBAL_ERR_THRESH = 0.02   # [rad] スルー完了判定
@@ -122,13 +124,11 @@ STABILIZE_TIMEOUT    = 6.0     # [s]
 
 GIMBAL_SLEW_TIMEOUT = 20.0     # [s]
 
-# ---- rev.3: gimbal1 解放後の静定 -------------------------------------------
-# C++ 側は解放後、固定角から +-gimbal_delta_angle_ (既定 0.2 rad/周期) で歩く。
-# psi1 の 1 ループあたりの変化がこれを下回ったら「歩き終わった」とみなす。
+# ---- gimbal1 解放後の静定 --------------------------------------------------
 RELEASE_PSI_RATE_THRESH = 0.01   # [rad/loop] = 0.2 rad/s
 RELEASE_HOLD_LOOPS      = 20     # 連続してこの回数静止したら収束（= 1.0 s）
-RELEASE_MIN_WAIT        = 1.5    # [s] C++ が fix_enabled=False を返すまでの猶予込み
-RELEASE_TIMEOUT         = 12.0   # [s] 2.5 rad / (0.2 rad/loop * 20 Hz) = 0.6 s なので十分
+RELEASE_MIN_WAIT        = 1.5    # [s]
+RELEASE_TIMEOUT         = 12.0   # [s]
 RELEASE_FC_T_MIN_OK     = 2.0    # [Nm] 解放後、これ以上に回復するまで待つ
 # ---------------------------------------------------------------------------
 
@@ -171,7 +171,7 @@ class GimbalFixedSequencer(object):
         self.hold_count = 0
         self.aborted = False
 
-        # rev.3: 解放後の psi1 収束監視用
+        # 解放後の psi1 収束監視用
         self.release_hold = 0
         self.psi1_prev = None
 
@@ -303,27 +303,41 @@ class GimbalFixedSequencer(object):
     def _reached(self, joints):
         return all(abs(self._diff(j)) <= ANGLE_ERROR_THRESHOLD for j in joints)
 
-    # ---- 【修正B】等価解の選択（符号規約を本 rev で確定） ----
+    # ---- 【変更H】等価解の選択（nearest に戻した） ----
     def _pick_gimbal_target(self, sign):
+        """
+        d1 = target_q1 - current_q1 の符号で 2 候補を決め、
+        現在の gimbal1 角 (self.fix_current) に近いほうを選ぶ。
+
+          sign = -1  (d1 < 0): a = +0.3,  b = pi - 0.3
+          sign = +1  (d1 > 0): a = -0.3,  b = 0.3 - pi   (= norm(pi - (-0.3)))
+
+        a と b は sin が等しい (b = pi - a) ので joint1 モーメント
+            M1(psi1) = -A sin(psi1) + c
+        は同一。近いほうを選ぶことでスルー距離を最小化する。
+
+        rev.3 で試した cos<0 選択は、開始形態が直線近傍のときは逆効果で
+        あることが分かったため撤回し、nearest に戻した。
+        （tau_min=0 の主因は分枝ではなく変形順序だった。）
+        GIMBAL1_FORCE_BRANCH は検証用に残す。
+        """
         a = self._norm(-GIMBAL1_MAG * GIMBAL1_SIGN * sign)
         b = self._norm(math.pi - a)
         psi_now = self.fix_current
+
+        da = abs(self._norm(a - psi_now))
+        db = abs(self._norm(b - psi_now))
 
         if GIMBAL1_FORCE_BRANCH == 'a':
             best, why = a, "forced 'a'"
         elif GIMBAL1_FORCE_BRANCH == 'b':
             best, why = b, "forced 'b'"
         else:
-            # cos(psi1) < 0 の枝（|psi1| が pi に近い側）が
-            # feasible torque convex を保つことが実験で分かっている。
-            # a, b は sin が等しく joint1 モーメントは同一なので、
-            # cos の符号だけで選んでよい。
-            best, why = (a, "cos<0") if math.cos(a) < 0 else (b, "cos<0")
+            best, why = (a, "nearest") if da <= db else (b, "nearest")
 
-        rospy.loginfo("[Seq] psi1 now=%+.3f | a=%+.3f (cos=%+.2f) / b=%+.3f (cos=%+.2f) -> pick %+.3f (%s)",
-                    psi_now, a, math.cos(a), b, math.cos(b), best, why)
+        rospy.loginfo("[Seq] psi1 now=%+.3f | a=%+.3f (d=%.3f) / b=%+.3f (d=%.3f) -> pick %+.3f (%s)",
+                      psi_now, a, da, b, db, best, why)
         return best
-
 
     def _check_fc_t_min(self):
         """
@@ -332,7 +346,6 @@ class GimbalFixedSequencer(object):
         """
         if self.sweep_mode:
             return True
-        # 【修正F】自分が固定を意図し、かつ C++ が受理しているときだけ監視
         if not (self.fix_active and self.fix_enabled) or not self.fix_state_received:
             return True
         if self.fc_t_min < FC_T_MIN_REQUIRED:
@@ -347,7 +360,7 @@ class GimbalFixedSequencer(object):
     # ---------------- steps ----------------
 
     def _step_init(self):
-        """(1) 開始 / 初期ホバリング静定 -> (2) 変形方向"""
+        """(1) 開始 / 初期ホバリング静定 -> (2) joint2,3 変形へ"""
         self._send_joint_cmd()
         self._release_fix()
 
@@ -356,19 +369,54 @@ class GimbalFixedSequencer(object):
             return
 
         if self._settled(self.joint_names):
-            d1 = self._diff('joint1')
-            if abs(d1) <= ANGLE_ERROR_THRESHOLD:
-                rospy.loginfo("[Seq] joint1 already at target -> skip to joint2,3 (psi1 free)")
+            # joint2,3 が既に目標なら、gimbal 固定判定へ直行
+            if self._reached(['joint2', 'joint3']):
+                rospy.loginfo("[Seq] joint2,3 already at target -> gimbal fix stage")
+                self._enter_gimbal_fix_or_skip()
+            else:
+                rospy.loginfo("[Seq] init settled -> joint2,3 servo deform (psi1 free)")
                 self._goto(Step.JOINT23_SERVO)
-                return
 
-            sign = 1.0 if d1 >= 0.0 else -1.0
-            self.gimbal1_cmd = self._pick_gimbal_target(sign)
-            rospy.loginfo("[Seq] q1 diff = %+.4f -> gimbal1 target = %+.3f rad", d1, self.gimbal1_cmd)
-            self._goto(Step.GIMBAL_FIX)
+    def _step_joint23_servo(self):
+        """(2) joint2,3 を先に変形。psi1 は自由（4次元フル最適化）"""
+        self._release_fix()
+
+        self._ramp(['joint2', 'joint3'])
+        self._send_joint_cmd()
+
+        rospy.loginfo_throttle(0.5, "[Seq] joint2,3: q=(%.4f, %.4f) tgt=(%.4f, %.4f) psi1=%+.3f fc_t_min=%.3f",
+                               self.current_q['joint2'], self.current_q['joint3'],
+                               self.target_q['joint2'], self.target_q['joint3'],
+                               self.fix_current, self.fc_t_min)
+
+        if self._reached(['joint2', 'joint3']):
+            rospy.loginfo("[Seq] joint2,3 deform done -> stabilize")
+            self._goto(Step.JOINT23_STABILIZE)
+
+    def _step_joint23_stabilize(self):
+        """(3) joint2,3 変形後の静定 -> gimbal 固定判定へ"""
+        self._send_joint_cmd()
+        self._release_fix()
+
+        if self._settled(['joint2', 'joint3']):
+            rospy.loginfo("[Seq] joint2,3 settled (fc_t_min=%.3f) -> gimbal fix stage", self.fc_t_min)
+            self._enter_gimbal_fix_or_skip()
+
+    def _enter_gimbal_fix_or_skip(self):
+        """joint1 の変形が必要かどうかを判定し、gimbal 固定 or 完了へ分岐"""
+        d1 = self._diff('joint1')
+        if abs(d1) <= ANGLE_ERROR_THRESHOLD:
+            rospy.loginfo("[Seq] joint1 already at target -> done (psi1 free)")
+            self._goto(Step.COMPLETE)
+            return
+
+        sign = 1.0 if d1 >= 0.0 else -1.0
+        self.gimbal1_cmd = self._pick_gimbal_target(sign)
+        rospy.loginfo("[Seq] q1 diff = %+.4f -> gimbal1 target = %+.3f rad", d1, self.gimbal1_cmd)
+        self._goto(Step.GIMBAL_FIX)
 
     def _step_gimbal_fix(self):
-        """(3) gimbal1 を固定角へスルーさせ、最適化変数から外す"""
+        """(4) gimbal1 を固定角へスルーさせ、最適化変数から外す"""
         self._send_joint_cmd()
         self._hold_fix()
 
@@ -379,7 +427,6 @@ class GimbalFixedSequencer(object):
                                self.fix_enabled, self.fix_current, self.fix_target,
                                self.fix_err, self.fc_t_min)
 
-        # 【修正A】fix_enabled を必須条件に加える
         if self.fix_enabled and self.fix_err <= GIMBAL_ERR_THRESH:
             rospy.loginfo("[Seq] gimbal1 fixed at %+.3f rad (fc_t_min=%.3f Nm) -> stabilize",
                           self.fix_current, self.fc_t_min)
@@ -391,7 +438,7 @@ class GimbalFixedSequencer(object):
             self._goto(Step.COMPLETE)
 
     def _step_gimbal_stabilize(self):
-        """(4) 固定後の静定"""
+        """(5) 固定後の静定"""
         self._send_joint_cmd()
         self._hold_fix()
         if not self._check_fc_t_min():
@@ -402,7 +449,7 @@ class GimbalFixedSequencer(object):
             self._goto(Step.JOINT1_SERVO)
 
     def _step_joint1_servo(self):
-        """(5) joint1 をサーボで変形（gimbal1 は固定のまま）"""
+        """(6) joint1 をサーボで変形（gimbal1 は固定のまま）"""
         self._hold_fix()
         if not self._check_fc_t_min():
             return
@@ -419,7 +466,7 @@ class GimbalFixedSequencer(object):
             self._goto(Step.JOINT1_STABILIZE)
 
     def _step_joint1_stabilize(self):
-        """(6) joint1 変形終了・静定 -> 【変更D】ここで psi1 を解放する"""
+        """(7) joint1 変形終了・静定 -> psi1 を解放する"""
         self._send_joint_cmd()
         self._hold_fix()
         if not self._check_fc_t_min():
@@ -430,14 +477,9 @@ class GimbalFixedSequencer(object):
             self._release_fix()
             self._goto(Step.GIMBAL_RELEASE)
 
-    # ---- 【追加E】gimbal1 解放後の静定 ----
     def _step_gimbal_release(self):
         """
-        (7) psi1 を最適化に返し、最適解へ歩き終わるまで待つ。
-
-        C++ 側は固定角からウォームスタートして +-gimbal_delta_angle_ / 周期で歩く。
-        さらに stabilityCheck が落ちると delta_angle = pi にリセットされ大きく跳ぶ。
-        joint2,3 を動かす前に、この過渡を完全に終わらせる。
+        (8) psi1 を最適化に返し、最適解へ歩き終わるまで待つ。
 
         収束条件（すべて満たすこと）:
           - C++ が fix_enabled = False を返している
@@ -454,7 +496,6 @@ class GimbalFixedSequencer(object):
         d_psi1 = abs(self._norm(psi1 - self.psi1_prev))
         self.psi1_prev = psi1
 
-        # C++ が解放を受理していなければ何も数えない
         if self.fix_enabled:
             self.release_hold = 0
             rospy.logwarn_throttle(1.0, "[Seq] waiting for navigator to release psi1 ...")
@@ -476,44 +517,19 @@ class GimbalFixedSequencer(object):
             return
 
         if self.release_hold >= RELEASE_HOLD_LOOPS:
-            rospy.loginfo("[Seq] psi1 released and settled at %+.3f rad (fc_t_min=%.3f Nm) -> joint2,3 deform",
+            rospy.loginfo("[Seq] psi1 released and settled at %+.3f rad (fc_t_min=%.3f Nm) -> done",
                           psi1, self.fc_t_min)
-            self._goto(Step.JOINT23_SERVO)
+            self._goto(Step.COMPLETE)
             return
 
         if self._elapsed() >= RELEASE_TIMEOUT:
             rospy.logwarn("[Seq] release settle timeout (%.1f s): psi1=%+.4f dpsi=%.4f fc_t_min=%.3f. "
-                          "proceeding to joint2,3 anyway.",
+                          "proceeding to done anyway.",
                           RELEASE_TIMEOUT, psi1, d_psi1, self.fc_t_min)
-            self._goto(Step.JOINT23_SERVO)
-
-    def _step_joint23_servo(self):
-        """(8) joint2,3 を従来どおり変形。psi1 は自由（最適化変数）"""
-        self._release_fix()
-
-        self._ramp(['joint2', 'joint3'])
-        self._send_joint_cmd()
-
-        rospy.loginfo_throttle(0.5, "[Seq] joint2,3: q=(%.4f, %.4f) tgt=(%.4f, %.4f) psi1=%+.3f fc_t_min=%.3f",
-                               self.current_q['joint2'], self.current_q['joint3'],
-                               self.target_q['joint2'], self.target_q['joint3'],
-                               self.fix_current, self.fc_t_min)
-
-        if self._reached(['joint2', 'joint3']):
-            rospy.loginfo("[Seq] joint2,3 deform done -> stabilize")
-            self._goto(Step.JOINT23_STABILIZE)
-
-    def _step_joint23_stabilize(self):
-        """(9) 最終静定"""
-        self._send_joint_cmd()
-        self._release_fix()
-
-        if self._settled(['joint2', 'joint3']):
-            rospy.loginfo("[Seq] all settled")
             self._goto(Step.COMPLETE)
 
     def _step_complete(self):
-        """完了。gimbal1 は自由のまま（rev.2 は固定を維持していた）"""
+        """完了。gimbal1 は自由のまま"""
         self._send_joint_cmd()
         self._release_fix()
 
@@ -529,7 +545,6 @@ class GimbalFixedSequencer(object):
     def _step_sweep(self):
         """
         joint を固定したまま psi1 を一周させ、(psi1, fc_t_min) を記録する。
-        C++ 側の slew rate より遅く指令を動かすことで、指令に追従させる。
         """
         self._send_joint_cmd()
 
@@ -557,13 +572,13 @@ class GimbalFixedSequencer(object):
 
             {
                 Step.INIT:              self._step_init,
+                Step.JOINT23_SERVO:     self._step_joint23_servo,
+                Step.JOINT23_STABILIZE: self._step_joint23_stabilize,
                 Step.GIMBAL_FIX:        self._step_gimbal_fix,
                 Step.GIMBAL_STABILIZE:  self._step_gimbal_stabilize,
                 Step.JOINT1_SERVO:      self._step_joint1_servo,
                 Step.JOINT1_STABILIZE:  self._step_joint1_stabilize,
                 Step.GIMBAL_RELEASE:    self._step_gimbal_release,
-                Step.JOINT23_SERVO:     self._step_joint23_servo,
-                Step.JOINT23_STABILIZE: self._step_joint23_stabilize,
                 Step.COMPLETE:          self._step_complete,
                 Step.SWEEP:             self._step_sweep,
             }[self.step]()
@@ -605,7 +620,7 @@ def main():
                 rospy.loginfo("[Sweep] finished.")
                 break
             print("\n" + "=" * 56)
-            print(" Hydrus-Xi : gimbal1 fixed / joint1 servo deformation")
+            print(" Hydrus-Xi : joint2,3 first -> gimbal1 fixed / joint1 deform")
             print(" next target [q1 q2 q3]  (q to quit)")
             print("=" * 56)
             try:
