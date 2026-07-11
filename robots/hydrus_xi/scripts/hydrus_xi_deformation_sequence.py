@@ -305,36 +305,25 @@ class GimbalFixedSequencer(object):
 
     # ---- 【修正B】等価解の選択（符号規約を本 rev で確定） ----
     def _pick_gimbal_target(self, sign):
-        """
-        d1 = target_q1 - current_q1 の符号で 2 候補を決め、
-        現在の gimbal1 角 (self.fix_current) に近いほうを選ぶ。
-
-          sign = -1  (d1 < 0): a = +0.3,  b = pi - 0.3
-          sign = +1  (d1 > 0): a = -0.3,  b = 0.3 - pi   (= norm(pi - (-0.3)))
-
-        a と b は sin が等しい (b = pi - a) ので joint1 モーメント
-            M1(psi1) = -A sin(psi1) + c
-        は同一。ただし cos(a) = -cos(pi - a) なので直交する横力の向きは反転し、
-        tau_min(q1) の減衰の仕方は両者で異なりうる。
-        GIMBAL1_FORCE_BRANCH で分枝を強制して比較できるようにしてある。
-        """
         a = self._norm(-GIMBAL1_MAG * GIMBAL1_SIGN * sign)
         b = self._norm(math.pi - a)
         psi_now = self.fix_current
-
-        da = abs(self._norm(a - psi_now))
-        db = abs(self._norm(b - psi_now))
 
         if GIMBAL1_FORCE_BRANCH == 'a':
             best, why = a, "forced 'a'"
         elif GIMBAL1_FORCE_BRANCH == 'b':
             best, why = b, "forced 'b'"
         else:
-            best, why = (a, "nearest") if da <= db else (b, "nearest")
+            # cos(psi1) < 0 の枝（|psi1| が pi に近い側）が
+            # feasible torque convex を保つことが実験で分かっている。
+            # a, b は sin が等しく joint1 モーメントは同一なので、
+            # cos の符号だけで選んでよい。
+            best, why = (a, "cos<0") if math.cos(a) < 0 else (b, "cos<0")
 
-        rospy.loginfo("[Seq] psi1 now=%+.3f | candidates %+.3f (d=%.3f) / %+.3f (d=%.3f) -> pick %+.3f (%s)",
-                      psi_now, a, da, b, db, best, why)
+        rospy.loginfo("[Seq] psi1 now=%+.3f | a=%+.3f (cos=%+.2f) / b=%+.3f (cos=%+.2f) -> pick %+.3f (%s)",
+                    psi_now, a, math.cos(a), b, math.cos(b), best, why)
         return best
+
 
     def _check_fc_t_min(self):
         """
