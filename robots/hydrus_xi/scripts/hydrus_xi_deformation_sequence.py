@@ -45,7 +45,11 @@ rev.2 での修正（継続）
         であり sin(a) = sin(pi - a) なので psi1 = a と psi1 = pi - a は
         同じ joint1 モーメントを生む。現在角に近いほうを選ぶ。
 
-        注意: 等価なのは joint1 まわりのモーメント 1 成分についてだけ。
+        符号規約（本 rev で確定させたマッピング）:
+            d1 = target_q1 - current_q1
+            d1 < 0 (sign=-1): a = +0.3,  b = pi - 0.3
+            d1 > 0 (sign=+1): a = -0.3,  b = 0.3 - pi   (= norm(pi - (-0.3)))
+        a と b は sin が等しいので joint1 モーメントは同一。
         cos(a) と cos(pi - a) は符号が逆なので、直交する横力の向きは反転し、
         lambda_s / CoG フレーム / tau_min はすべて別物になる。
         GIMBAL1_FORCE_BRANCH で分枝を強制できるようにしてある。
@@ -97,10 +101,10 @@ class Step(Enum):
 
 # ---- 実験パラメータ ---------------------------------------------------------
 GIMBAL1_MAG  = 0.3      # [rad] 固定するジンバル角の「大きさ」（正弦の引数として）
-GIMBAL1_SIGN = +1.0     # 符号規約が未同定。実測後にここを反転させる
+GIMBAL1_SIGN = +1.0     # 符号規約。実測後にマッピングが逆だったらここを反転させる
 
 # 分枝の強制。None なら「現在角に近いほう」を自動選択（rev.2 の挙動）
-#   'a' -> psi1 = MAG * SIGN * sign
+#   'a' -> psi1 = a       (= -MAG * SIGN * sign)
 #   'b' -> psi1 = pi - a
 # 仮説検証（cos の符号が tau_min に効くか）のために使う。
 GIMBAL1_FORCE_BRANCH = None
@@ -299,17 +303,22 @@ class GimbalFixedSequencer(object):
     def _reached(self, joints):
         return all(abs(self._diff(j)) <= ANGLE_ERROR_THRESHOLD for j in joints)
 
-    # ---- 【修正B】等価解の選択 ----
+    # ---- 【修正B】等価解の選択（符号規約を本 rev で確定） ----
     def _pick_gimbal_target(self, sign):
         """
-        M1(psi1) = -A sin(psi1) + c であり sin(a) = sin(pi - a) なので、
-        psi1 = a と psi1 = pi - a は同じ joint1 モーメントを生む。
+        d1 = target_q1 - current_q1 の符号で 2 候補を決め、
+        現在の gimbal1 角 (self.fix_current) に近いほうを選ぶ。
 
-        ただし cos(a) = -cos(pi - a) なので直交する横力の向きは反転し、
+          sign = -1  (d1 < 0): a = +0.3,  b = pi - 0.3
+          sign = +1  (d1 > 0): a = -0.3,  b = 0.3 - pi   (= norm(pi - (-0.3)))
+
+        a と b は sin が等しい (b = pi - a) ので joint1 モーメント
+            M1(psi1) = -A sin(psi1) + c
+        は同一。ただし cos(a) = -cos(pi - a) なので直交する横力の向きは反転し、
         tau_min(q1) の減衰の仕方は両者で異なりうる。
         GIMBAL1_FORCE_BRANCH で分枝を強制して比較できるようにしてある。
         """
-        a = self._norm(GIMBAL1_MAG * GIMBAL1_SIGN * sign)
+        a = self._norm(-GIMBAL1_MAG * GIMBAL1_SIGN * sign)
         b = self._norm(math.pi - a)
         psi_now = self.fix_current
 
