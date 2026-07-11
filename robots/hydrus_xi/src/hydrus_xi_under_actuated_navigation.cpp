@@ -487,7 +487,11 @@ bool HydrusXiUnderActuatedNavigator::plan()
 
       /* 自由変数を全体ベクトルへ書き戻す */
       opt_gimbal_angles_ = composeGimbalAngles(x);
-
+      /* ★ステップ1: モデルを採用解 x の状態に戻してから τmin を読む。
+       *   COBYLA は棄却点で終わることがあり、直後のモデルは最後に評価した
+       *   試行点（＝採用解とは限らない）の状態になっているため。 */
+      applyGimbalAngles(this, x);
+      
       last_fc_t_min_ = robot_model_for_plan_->getFeasibleControlTMin();
 
       if(plan_verbose_)
