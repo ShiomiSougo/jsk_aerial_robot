@@ -2,59 +2,51 @@
 # -*- coding: utf-8 -*-
 
 """
-Hydrus-Xi 変形シーケンス（gimbal1 固定・joint1 サーボ駆動版）rev.5
+Hydrus-Xi 変形シーケンス（gimbal1 固定・joint1 サーボ駆動版）rev.6
 
 目的:
   psi_1 (gimbal1 の vectoring 角) を固定したまま joint1 の変形を成立させる。
-  joint1 が line-shape 特異形態 (q1 ~ 0) を通過する場合は、事前に joint2,3 を
-  展開して d（モーメントアーム）を稼いでおくことで、特異点を安全に通過する。
 
 --------------------------------------------------------------------------
-rev.5 での変更（rev.4 からの差分）
+rev.6 での変更（rev.5 からの差分）— 残課題B（スルー中の特異点通過）対策・案A
 --------------------------------------------------------------------------
-[変更I] 変形順序を joint1 -> joint2,3 に戻した（rev.3 と同じ本順序）。
-        rev.4 で joint2,3 を先に畳む順序にしたところ、目標形態によっては
-        joint2,3 が畳まれて d が短くなり、かえって joint1 の特異点通過が
-        厳しくなった。順序を戻し、代わりに [追加J] の事前準備で対処する。
+[追加K] psi1 スルー中の tau_min ガードと分枝リトライ。
 
-[追加J] 特異点通過の事前準備（PREP）。
-        joint1 の始点 q1_start と目標 q1_target が作る区間が
-        危険帯 [-DANGER, +DANGER]（既定 ±0.25 rad）と重なる場合のみ、
-        joint1 を動かす前に joint2,3 を PREP_ANGLE（既定 0.5 rad）へ
-        展開しておく。周囲リンクが開くと sin(beta)*lambda*d の d が伸び、
-        joint1 が line-shape (q1~0) を通過する間も tau_min を支えられる。
+        残課題B: 開始形態が直線近傍（q1≈0）だと、psi1 を固定角へスルーする
+        大回転（例: +1.43 -> -0.30 で 1.73 rad）の途中で特異形態を踏み、
+        joint を 1 つも動かさないうちに tau_min=0 で abort していた。
 
-        joint1 変形後、joint2,3 を PREP_ANGLE から最終目標角へ変形する。
-        この joint2,3 変形は psi1 自由の 4 次元フル最適化なので安定。
+        案A（psi1 スルー前にも joint2,3 を開く）は rev.5 の PREP で既に
+        行っているが、それだけでは直線近傍からの psi1 大回転を救えなかった。
+        そこで本 rev では次を追加する:
 
-        危険帯を通過しない変形（例: +1.57 -> +0.5）は準備を発動せず、
-        従来どおり最短経路で動く。
+        (K-1) スルー中の tau_min を SLEW_FC_T_MIN_MIN で監視し、下回ったら
+              「そのスルー経路は特異点を踏む」と判定して即座に中断する
+              （0 になるまで待たない）。
 
---------------------------------------------------------------------------
-継続している変更
---------------------------------------------------------------------------
-[変更D] joint1 変形後に psi1 を解放（rev.3）。
-[追加E] GIMBAL_RELEASE ステップ（rev.3）。
-[修正F] 再送判定を self.fix_active で行う（rev.3）。
-[変更H] _pick_gimbal_target は nearest（rev.4）。
-[修正A] 固定完了判定に fix_enabled 必須（rev.2）。
-[追加C] sweep モード（rev.2）。
+        (K-2) 中断したら、もう一方の分枝（a<->b）へ目標を切り替えて
+              スルーをやり直す。sin(a)=sin(pi-a) で joint1 モーメントは同じ
+              だが、回転経路が逆側を通るので特異点を踏まずに届く可能性がある。
+
+        (K-3) 両分枝とも踏む場合は、その開始形態からの joint1 固定変形は
+              不可能と判定して abort する（残課題として記録）。
+
+[変更L] _pick_gimbal_target が両分枝の値を返すようにし、スルー失敗時に
+        呼び出し側で切り替えられるようにした。
 
 --------------------------------------------------------------------------
-シーケンス（通常モード, rev.5）
+継続している変更（rev.5 まで）
 --------------------------------------------------------------------------
-  (1) 開始・初期静定、危険帯通過を判定
-  --- 危険帯を通過する場合のみ ---
-  (P1) joint2,3 を PREP_ANGLE(0.5) へ展開（psi1 自由）
-  (P2) 静定
-  --- 共通 ---
-  (2) gimbal1 を固定角へスルー
-  (3) 固定後の静定
-  (4) joint1 を変形（gimbal1 固定）
-  (5) joint1 変形終了・静定
-  (6) gimbal1 を解放し収束待ち
-  (7) joint2,3 を最終目標角へ変形（psi1 自由）
-  (8) 静定・完了
+[追加J] 特異点通過の事前準備 PREP（joint1 が危険帯を通るとき joint2,3 を展開）。
+[変更I] 変形順序 joint1 -> joint2,3。
+[変更D/追加E/修正F] psi1 解放と GIMBAL_RELEASE、再送判定 self.fix_active。
+[修正A/追加C] 固定完了判定、sweep モード。
+
+--------------------------------------------------------------------------
+既知の残課題（rev.6 でも未解決）
+--------------------------------------------------------------------------
+残課題A: 目標の joint3 が符号反転すると joint2,3 畳み直しで特異点を踏む。
+         （例: -0.9 0.3 -0.3）。本 rev では未対策。
 
 使用例:
   rosrun hydrus_xi hydrus_xi_gimbal_fixed_sequence.py -0.9 0.3 0.3
@@ -71,7 +63,7 @@ from enum import Enum
 
 class Step(Enum):
     INIT              = 0
-    PREP_JOINT23      = 1      # rev.5: 特異点通過の事前準備
+    PREP_JOINT23      = 1
     PREP_STABILIZE    = 2
     GIMBAL_FIX        = 3
     GIMBAL_STABILIZE  = 4
@@ -85,38 +77,42 @@ class Step(Enum):
 
 
 # ---- 実験パラメータ ---------------------------------------------------------
-GIMBAL1_MAG  = 0.3      # [rad] 固定するジンバル角の「大きさ」
-GIMBAL1_SIGN = +1.0     # 符号規約。実測後にマッピングが逆だったらここを反転
+GIMBAL1_MAG  = 0.3
+GIMBAL1_SIGN = +1.0
 
-# 分枝の強制。None なら nearest。'a'/'b' は検証用。
+# 分枝の強制。None なら nearest から開始し、失敗したら逆枝へ自動リトライ。
 GIMBAL1_FORCE_BRANCH = None
 
-# ---- rev.5: 特異点通過の事前準備 -------------------------------------------
-DANGER      = 0.25     # [rad] 危険帯 [-DANGER, +DANGER]。joint1 がここを通ると準備発動
+# ---- 特異点通過の事前準備 ---------------------------------------------------
+DANGER      = 0.25     # [rad] 危険帯 [-DANGER, +DANGER]
 PREP_ANGLE  = 1.2      # [rad] 準備時に joint2,3 を展開する角度
 # ---------------------------------------------------------------------------
 
-GIMBAL_ERR_THRESH = 0.02   # [rad] スルー完了判定
-FC_T_MIN_REQUIRED = 0.01   # [Nm]  固定中これを下回ったら中断。実機では 1.5 ~ 2.0 に
+# ---- rev.6 [追加K]: スルー中の tau_min ガードと分枝リトライ ------------------
+SLEW_FC_T_MIN_MIN = 1.0   # [Nm] スルー中これを下回ったら「経路が特異点を踏む」と判定し中断
+                          #      0 になるまで待たず早めに切り替える。谷の深さに応じて調整。
+SLEW_GUARD_MIN_TRAVEL = 0.15  # [rad] スルー開始直後の過渡を無視するための最小移動量
+# ---------------------------------------------------------------------------
 
-ANGLE_ERROR_THRESHOLD = 0.03   # [rad] 関節到達判定
-JOINT_RAMP_RATE = 0.0125       # [rad/loop] = 0.25 rad/s @ 20 Hz
+GIMBAL_ERR_THRESH = 0.02
+FC_T_MIN_REQUIRED = 0.01   # 固定完了後（joint1 変形中）のガード。実機では 1.5~2.0 に
 
-STABILIZE_VEL_THRESH = 0.01    # [rad/s]
-STABILIZE_HOLD_LOOPS = 20      # 連続静止でこの回数
-STABILIZE_MIN_WAIT   = 1.0     # [s]
-STABILIZE_TIMEOUT    = 6.0     # [s]
+ANGLE_ERROR_THRESHOLD = 0.03
+JOINT_RAMP_RATE = 0.0125
 
-GIMBAL_SLEW_TIMEOUT = 20.0     # [s]
+STABILIZE_VEL_THRESH = 0.01
+STABILIZE_HOLD_LOOPS = 20
+STABILIZE_MIN_WAIT   = 1.0
+STABILIZE_TIMEOUT    = 6.0
 
-# gimbal1 解放後の静定
+GIMBAL_SLEW_TIMEOUT = 20.0
+
 RELEASE_PSI_RATE_THRESH = 0.01
 RELEASE_HOLD_LOOPS      = 20
 RELEASE_MIN_WAIT        = 1.5
 RELEASE_TIMEOUT         = 12.0
 RELEASE_FC_T_MIN_OK     = 2.0
 
-# sweep モード
 SWEEP_RATE = 0.02
 
 LOOP_FREQ = 20.0
@@ -153,11 +149,16 @@ class GimbalFixedSequencer(object):
         self.hold_count = 0
         self.aborted = False
 
-        # rev.5: 準備を挟んだかどうか
         self.prep_used = False
 
         self.release_hold = 0
         self.psi1_prev = None
+
+        # rev.6 [追加K]: 分枝リトライ用
+        self.branch_cand = {}       # {'a': val, 'b': val}
+        self.branch_tried = []      # 試した分枝キー
+        self.branch_current = None  # 現在試している分枝キー
+        self.slew_start_psi = None  # スルー開始時の psi1（過渡判定用）
 
         self.joints_ctrl_pub = rospy.Publisher('/hydrus_xi/joints_ctrl', JointState, queue_size=1)
         self.fix_cmd_pub     = rospy.Publisher('/hydrus_xi/fixed_gimbal_cmd', Float64MultiArray, queue_size=1)
@@ -284,7 +285,6 @@ class GimbalFixedSequencer(object):
                 self.joint_targets[j] = self.target_q[j]
 
     def _ramp_to(self, joints, goals):
-        """joint_targets を任意の goal 値へランプ（準備用。target_q とは別の行き先）"""
         done = True
         for j, g in zip(joints, goals):
             d = self._norm(g - self.joint_targets[j])
@@ -301,30 +301,33 @@ class GimbalFixedSequencer(object):
         return all(abs(self._diff(j)) <= ANGLE_ERROR_THRESHOLD for j in joints)
 
     def _joint1_crosses_danger(self):
-        """joint1 の [start, target] 区間が危険帯 [-DANGER, +DANGER] と重なるか"""
         lo, hi = sorted([self.current_q['joint1'], self.target_q['joint1']])
         return (lo < DANGER) and (hi > -DANGER)
 
-    def _pick_gimbal_target(self, sign):
+    # ---- rev.6 [変更L]: 両分枝の候補を作る ----
+    def _compute_branches(self, sign):
+        """
+        sign から a, b の 2 候補を計算して dict で返す。
+          a = -MAG*SIGN*sign,  b = pi - a   （sin が等しく joint1 モーメント同一）
+        """
         a = self._norm(-GIMBAL1_MAG * GIMBAL1_SIGN * sign)
         b = self._norm(math.pi - a)
+        return {'a': a, 'b': b}
+
+    def _order_branches(self, cand):
+        """
+        試す順序を決める。FORCE 指定があればそれのみ。
+        なければ「現在角に近い方」を先に、遠い方を後に。
+        """
+        if GIMBAL1_FORCE_BRANCH in ('a', 'b'):
+            return [GIMBAL1_FORCE_BRANCH]
         psi_now = self.fix_current
-
-        da = abs(self._norm(a - psi_now))
-        db = abs(self._norm(b - psi_now))
-
-        if GIMBAL1_FORCE_BRANCH == 'a':
-            best, why = a, "forced 'a'"
-        elif GIMBAL1_FORCE_BRANCH == 'b':
-            best, why = b, "forced 'b'"
-        else:
-            best, why = (a, "nearest") if da <= db else (b, "nearest")
-
-        rospy.loginfo("[Seq] psi1 now=%+.3f | a=%+.3f (d=%.3f) / b=%+.3f (d=%.3f) -> pick %+.3f (%s)",
-                      psi_now, a, da, b, db, best, why)
-        return best
+        da = abs(self._norm(cand['a'] - psi_now))
+        db = abs(self._norm(cand['b'] - psi_now))
+        return ['a', 'b'] if da <= db else ['b', 'a']
 
     def _check_fc_t_min(self):
+        """固定完了後（joint1 変形中）の tau_min ガード"""
         if self.sweep_mode:
             return True
         if not (self.fix_active and self.fix_enabled) or not self.fix_state_received:
@@ -391,28 +394,67 @@ class GimbalFixedSequencer(object):
             self._enter_gimbal_fix(self._diff('joint1'))
 
     def _enter_gimbal_fix(self, d1):
+        """分枝候補を用意し、試す順序を決めてスルー開始"""
         sign = 1.0 if d1 >= 0.0 else -1.0
-        self.gimbal1_cmd = self._pick_gimbal_target(sign)
-        rospy.loginfo("[Seq] q1 diff = %+.4f -> gimbal1 target = %+.3f rad", d1, self.gimbal1_cmd)
+        self.branch_cand = self._compute_branches(sign)
+        self.branch_tried = []
+        order = self._order_branches(self.branch_cand)
+        self._start_branch(order[0], d1)
+
+    def _start_branch(self, key, d1=None):
+        """指定分枝でスルーを開始する"""
+        self.branch_current = key
+        self.branch_tried.append(key)
+        self.gimbal1_cmd = self.branch_cand[key]
+        self.slew_start_psi = self.fix_current
+        rospy.loginfo("[Seq] branch '%s': gimbal1 target = %+.3f rad (a=%+.3f b=%+.3f, psi_now=%+.3f)",
+                      key, self.gimbal1_cmd, self.branch_cand['a'], self.branch_cand['b'], self.fix_current)
         self._goto(Step.GIMBAL_FIX)
 
     def _step_gimbal_fix(self):
-        """(2) gimbal1 を固定角へスルー"""
+        """(2) gimbal1 を固定角へスルー。rev.6: スルー中 tau_min を監視し、
+             谷を踏んだら逆分枝へリトライする。"""
         self._send_joint_cmd()
         self._hold_fix()
-        if not self._check_fc_t_min():
-            return
 
-        rospy.loginfo_throttle(0.5, "[Seq] slewing: en=%d cur=%+.3f tgt=%+.3f err=%.4f fc_t_min=%.3f",
-                               self.fix_enabled, self.fix_current, self.fix_target,
-                               self.fix_err, self.fc_t_min)
+        # スルー開始からの移動量（過渡の除外用）
+        traveled = abs(self._norm(self.fix_current - (self.slew_start_psi or self.fix_current)))
+
+        # [追加K-1] スルー中の tau_min 監視（過渡を過ぎてから）
+        if (self.fix_active and self.fix_enabled and self.fix_state_received
+                and traveled > SLEW_GUARD_MIN_TRAVEL
+                and self.fc_t_min < SLEW_FC_T_MIN_MIN):
+            rospy.logwarn("[Seq] branch '%s' slew hits low tau_min=%.3f at psi1=%+.3f "
+                          "(< %.2f). this path crosses singularity.",
+                          self.branch_current, self.fc_t_min, self.fix_current, SLEW_FC_T_MIN_MIN)
+            # [追加K-2] 逆分枝を試す
+            remaining = [k for k in ('a', 'b') if k not in self.branch_tried]
+            if remaining:
+                rospy.loginfo("[Seq] retrying with the other branch '%s'", remaining[0])
+                self._release_fix()   # 一度解放して psi1 を自由に戻す
+                self._start_branch(remaining[0])
+                return
+            else:
+                # [追加K-3] 両分枝とも谷 -> この開始形態からは固定変形不能
+                rospy.logerr("[Seq] ABORT: both branches cross singularity during slew "
+                             "(q1_start=%+.3f). gimbal-fixed joint1 deform is infeasible "
+                             "from this near-singular start.", self.current_q['joint1'])
+                self._release_fix()
+                self.aborted = True
+                self._goto(Step.COMPLETE)
+                return
+
+        rospy.loginfo_throttle(0.5, "[Seq] slewing[%s]: en=%d cur=%+.3f tgt=%+.3f err=%.4f fc_t_min=%.3f travel=%.2f",
+                               self.branch_current, self.fix_enabled, self.fix_current, self.fix_target,
+                               self.fix_err, self.fc_t_min, traveled)
 
         if self.fix_enabled and self.fix_err <= GIMBAL_ERR_THRESH:
-            rospy.loginfo("[Seq] gimbal1 fixed at %+.3f rad (fc_t_min=%.3f Nm) -> stabilize",
-                          self.fix_current, self.fc_t_min)
+            rospy.loginfo("[Seq] gimbal1 fixed at %+.3f rad (branch '%s', fc_t_min=%.3f Nm) -> stabilize",
+                          self.fix_current, self.branch_current, self.fc_t_min)
             self._goto(Step.GIMBAL_STABILIZE)
         elif self._elapsed() > GIMBAL_SLEW_TIMEOUT:
-            rospy.logerr("[Seq] ABORT: gimbal1 slew timeout (en=%d err=%.4f)", self.fix_enabled, self.fix_err)
+            rospy.logerr("[Seq] ABORT: gimbal1 slew timeout (branch '%s' en=%d err=%.4f)",
+                         self.branch_current, self.fix_enabled, self.fix_err)
             self._release_fix()
             self.aborted = True
             self._goto(Step.COMPLETE)
@@ -500,8 +542,7 @@ class GimbalFixedSequencer(object):
             self._goto(Step.JOINT23_SERVO)
 
     def _step_joint23_servo(self):
-        """(7) joint2,3 を最終目標角へ変形（psi1 自由）
-             準備で 0.5 に開いた場合はそこから target_q へ畳み直す。"""
+        """(7) joint2,3 を最終目標角へ変形（psi1 自由）"""
         self._release_fix()
 
         self._ramp(['joint2', 'joint3'])
@@ -590,6 +631,8 @@ class GimbalFixedSequencer(object):
         self.target_q = {'joint1': q1, 'joint2': q2, 'joint3': q3}
         self.aborted = False
         self.prep_used = False
+        self.branch_tried = []
+        self.branch_current = None
         self._goto(Step.INIT)
         rospy.loginfo("[Seq] new target: (%.3f, %.3f, %.3f)", q1, q2, q3)
 
@@ -617,7 +660,7 @@ def main():
                 rospy.loginfo("[Sweep] finished.")
                 break
             print("\n" + "=" * 56)
-            print(" Hydrus-Xi : joint1 thrust-deform with singularity prep")
+            print(" Hydrus-Xi : joint1 thrust-deform (prep + slew branch retry)")
             print(" next target [q1 q2 q3]  (q to quit)")
             print("=" * 56)
             try:
