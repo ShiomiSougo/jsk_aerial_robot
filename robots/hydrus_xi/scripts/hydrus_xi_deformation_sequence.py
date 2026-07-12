@@ -127,7 +127,7 @@ GIMBAL1_MAG_NEG = 0.7    # [rad] joint1 を減らす向きのときの固定角�
 GIMBAL1_MAG_POS = 0.9    # [rad] joint1 を増やす向きのときの固定角の大きさ
 
 # 分枝の強制。None なら nearest から開始し、失敗したら逆枝へ自動リトライ。
-GIMBAL1_FORCE_BRANCH = None
+GIMBAL1_FORCE_BRANCH = 'a'#Noneにすぐ戻そう
 
 # ---- 特異点通過の事前準備 ---------------------------------------------------
 DANGER      = 0.25     # [rad] 危険帯 [-DANGER, +DANGER]
