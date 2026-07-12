@@ -574,7 +574,7 @@ class GimbalFixedSequencer(object):
             self._goto(Step.JOINT1_TRY1)
 
     def _step_joint1_try1(self):
-        gimbal_angle = 0.4  # ここを変えれば速さ調整（0に近いほど遅い）角度を増やす方向は-0.4で確定
+        gimbal_angle = 0.35  # ここを変えれば速さ調整（0に近いほど遅い）角度を増やす方向は-0.4で確定
 
         # (1) gimbal1 を固定
         self.gimbal1_cmd = gimbal_angle
