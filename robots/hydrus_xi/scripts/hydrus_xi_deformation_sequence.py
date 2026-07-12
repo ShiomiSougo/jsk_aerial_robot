@@ -123,8 +123,8 @@ class Step(Enum):
 #         候補 = -GIMBAL1_MAG_POS  または  GIMBAL1_MAG_POS - pi
 #   各ペアは現在の gimbal1 角に近い方を選ぶ（nearest）。
 #   ペア内の 2 値は sin が等しく joint1 モーメント同一、cos が逆（2 分枝）。
-GIMBAL1_MAG_NEG = 0.1    # [rad] joint1 を減らす向きのときの固定角の大きさ
-GIMBAL1_MAG_POS = 0.4    # [rad] joint1 を増やす向きのときの固定角の大きさ
+GIMBAL1_MAG_NEG = 0.7    # [rad] joint1 を減らす向きのときの固定角の大きさ
+GIMBAL1_MAG_POS = 0.9    # [rad] joint1 を増やす向きのときの固定角の大きさ
 
 # 分枝の強制。None なら nearest から開始し、失敗したら逆枝へ自動リトライ。
 GIMBAL1_FORCE_BRANCH = None
@@ -138,6 +138,14 @@ PREP_ANGLE  = 1.2      # [rad] 準備時に joint2,3 を展開する角度
 SLEW_FC_T_MIN_MIN = 1.0   # [Nm] スルー中これを下回ったら「経路が特異点を踏む」と判定し中断
                           #      0 になるまで待たず早めに切り替える。谷の深さに応じて調整。
 SLEW_GUARD_MIN_TRAVEL = 0.15  # [rad] スルー開始直後の過渡を無視するための最小移動量
+
+# rev.7 [変更P]: primary（正しい曲げ向き）が特異点を踏んだときの挙動。
+#   False（既定）: 逆枝へリトライしない。abort する。
+#     逆枝は cos 符号が逆 = joint1 の曲げ向きが反転するため、リトライで逆枝に
+#     固定されると意図と逆に曲がる／機体が不安定化する（実測で暴走を確認）。
+#     正しい向きの枝が固定できないなら、その開始形態からの推力変形は諦める。
+#   True: 逆枝へリトライする（曲げ向き反転のリスクを承知で経路を探す）。
+RETRY_TO_OPPOSITE_BRANCH = False
 # ---------------------------------------------------------------------------
 
 GIMBAL_ERR_THRESH = 0.02
@@ -586,7 +594,7 @@ class GimbalFixedSequencer(object):
             #       逆枝(secondary)は cos 符号が逆 = joint1 の曲げ向きが反転する。
             #       特異点回避のために逆枝へ落ちると、joint1 が意図と逆に曲がる恐れがある。
             remaining = [k for k in ('a', 'b') if k not in self.branch_tried]
-            if remaining:
+            if remaining and RETRY_TO_OPPOSITE_BRANCH:
                 rospy.logwarn("[Seq] retrying with the OTHER branch '%s'. "
                               "WARNING: this branch has opposite cos -> joint1 bending "
                               "direction may REVERSE. watch joint1 during thrust deform.",
@@ -595,10 +603,14 @@ class GimbalFixedSequencer(object):
                 self._start_branch(remaining[0])
                 return
             else:
-                # [追加K-3] 両分枝とも谷 -> この開始形態からは固定変形不能
-                rospy.logerr("[Seq] ABORT: both branches cross singularity during slew "
-                             "(q1_start=%+.3f). gimbal-fixed joint1 deform is infeasible "
-                             "from this near-singular start.", self.current_q['joint1'])
+                # 逆枝リトライは既定で無効（RETRY_TO_OPPOSITE_BRANCH=False）。
+                # 正しい曲げ向きの primary が特異点を踏んだ場合、逆枝に落ちると
+                # joint1 が逆に曲がる/暴走するため、abort する。
+                rospy.logerr("[Seq] ABORT: correct-direction branch '%s' crosses singularity "
+                             "during slew (q1_start=%+.3f, psi1=%+.3f). NOT retrying opposite "
+                             "branch (would reverse bending). gimbal-fixed thrust deform is "
+                             "infeasible from this start. consider changing start form / MAG.",
+                             self.branch_current, self.current_q['joint1'], self.fix_current)
                 self._release_fix()
                 self.aborted = True
                 self._goto(Step.COMPLETE)
