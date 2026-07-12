@@ -123,8 +123,8 @@ class Step(Enum):
 #         候補 = -GIMBAL1_MAG_POS  または  GIMBAL1_MAG_POS - pi
 #   各ペアは現在の gimbal1 角に近い方を選ぶ（nearest）。
 #   ペア内の 2 値は sin が等しく joint1 モーメント同一、cos が逆（2 分枝）。
-GIMBAL1_MAG_NEG = 0.3    # [rad] joint1 を減らす向きのときの固定角の大きさ
-GIMBAL1_MAG_POS = 0.5    # [rad] joint1 を増やす向きのときの固定角の大きさ
+GIMBAL1_MAG_NEG = 0.7    # [rad] joint1 を減らす向きのときの固定角の大きさ
+GIMBAL1_MAG_POS = 0.9    # [rad] joint1 を増やす向きのときの固定角の大きさ
 
 # 分枝の強制。None なら nearest から開始し、失敗したら逆枝へ自動リトライ。
 GIMBAL1_FORCE_BRANCH = None
