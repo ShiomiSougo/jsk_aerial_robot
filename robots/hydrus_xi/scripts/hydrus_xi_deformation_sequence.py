@@ -2,44 +2,10 @@
 # -*- coding: utf-8 -*-
 
 """
-Hydrus-Xi 変形シーケンス（gimbal1 固定・joint1 推力変形版）rev.7
+Hydrus-Xi 変形シーケンス（gimbal1 固定・joint1 サーボ駆動版）rev.6
 
 目的:
   psi_1 (gimbal1 の vectoring 角) を固定したまま joint1 の変形を成立させる。
-
---------------------------------------------------------------------------
-rev.7 での変更（rev.6 からの差分）— joint1 を推力変形（トルク0）へ
---------------------------------------------------------------------------
-[変更M] joint1 の変形を「サーボランプ」から「脱力＋推力モーメントによる
-        受動変形」へ置き換えた。
-
-        実験で判明した事実:
-        - シミュでは torque_enable も effort 値指定も効かない。joint1 を
-          脱力する唯一の手段は controller_manager で
-          servo_controller/joints/controller1/simulation を stop すること。
-        - stop 後、effort は数秒で 0 に落ち着き、joint1 は推力・重力の
-          モーメントで受動的に曲がる（実測: 0.32 -> -1.44 rad まで動いた）。
-        - 素の状態（gimbal1 を曲げ向きに固定しない）では、ロータ反モーメント
-          κλcos(β) により joint1 角が「小さくなる方向」へ回る傾向がある。
-        - 脱力すると行き過ぎるため、目標角の手前で再固定する必要がある。
-
-        実装:
-        (a) JOINT1_SERVO 進入時に一度だけ controller1 を stop（脱力）。
-            gimbal1 は固定したまま（曲げ向きのモーメントを与える）。
-        (b) 脱力中、joint1 の現在角を監視。変形方向 dir=sign(target-start)
-            に対し、目標の手前 stop_at = target - dir*JOINT1_STOP_MARGIN を
-            越えたら controller1 を再 start して固定する。
-            判定は dir*(current - stop_at) >= 0 で両方向対応（符号自動反転）。
-        (c) 再 start 時は「その時点の現在角」を目標位置にセットしてから
-            start するため、行き過ぎからの急な引き戻しが起きない（案1）。
-        (d) 安全機構: 可動域端 ±JOINT1_LIMIT に近づいたら強制再start。
-            一定時間動かなければ（反モーメントに逆らう方向で動けない等）
-            タイムアウトで再start＋警告。
-        (e) fc_t_min ガードは脱力中も有効（gimbal 固定中のため）。低下したら
-            即 controller1 を再start してから abort する（脱力放置を防ぐ）。
-
-        注意: シミュの damping/friction には実機 Dynamixel の逆駆動摩擦が
-        含まれないため、本挙動は原理確認であり実機挙動の予測ではない。
 
 --------------------------------------------------------------------------
 rev.6 での変更（rev.5 からの差分）— 残課題B（スルー中の特異点通過）対策・案A
@@ -92,8 +58,8 @@ import sys
 import math
 from sensor_msgs.msg import JointState
 from std_msgs.msg import Float64MultiArray
-from controller_manager_msgs.srv import SwitchController
 from enum import Enum
+from controller_manager_msgs.srv import SwitchController
 
 
 class Step(Enum):
@@ -109,22 +75,12 @@ class Step(Enum):
     JOINT23_STABILIZE = 9
     COMPLETE          = 10
     SWEEP             = 11
+    JOINT1_TRY1       = 12
 
 
 # ---- 実験パラメータ ---------------------------------------------------------
-# rev.7: joint1 固定角(psi1)を変形方向で非対称に設定する。
-#   ロータ反モーメント κλcos(β) は joint1 を「角度が小さくなる向き」へ回すため、
-#   その相殺量を正負で変える。値の大きさは今後調整。
-#
-#   d1 = target_q1 - current_q1 の符号で:
-#     負（joint1 を減らす, 反モーメントは味方）:
-#         候補 = GIMBAL1_MAG_NEG   または  pi - GIMBAL1_MAG_NEG
-#     正（joint1 を増やす, 反モーメントは逆風。より大きく振って相殺）:
-#         候補 = -GIMBAL1_MAG_POS  または  GIMBAL1_MAG_POS - pi
-#   各ペアは現在の gimbal1 角に近い方を選ぶ（nearest）。
-#   ペア内の 2 値は sin が等しく joint1 モーメント同一、cos が逆（2 分枝）。
-GIMBAL1_MAG_NEG = 0.2    # [rad] joint1 を減らす向きのときの固定角の大きさ
-GIMBAL1_MAG_POS = 0.2    # [rad] joint1 を増やす向きのときの固定角の大きさ
+GIMBAL1_MAG  = 0.3
+GIMBAL1_SIGN = +1.0
 
 # 分枝の強制。None なら nearest から開始し、失敗したら逆枝へ自動リトライ。
 GIMBAL1_FORCE_BRANCH = None
@@ -138,14 +94,6 @@ PREP_ANGLE  = 1.2      # [rad] 準備時に joint2,3 を展開する角度
 SLEW_FC_T_MIN_MIN = 1.0   # [Nm] スルー中これを下回ったら「経路が特異点を踏む」と判定し中断
                           #      0 になるまで待たず早めに切り替える。谷の深さに応じて調整。
 SLEW_GUARD_MIN_TRAVEL = 0.15  # [rad] スルー開始直後の過渡を無視するための最小移動量
-
-# rev.7 [変更P]: primary（正しい曲げ向き）が特異点を踏んだときの挙動。
-#   False（既定）: 逆枝へリトライしない。abort する。
-#     逆枝は cos 符号が逆 = joint1 の曲げ向きが反転するため、リトライで逆枝に
-#     固定されると意図と逆に曲がる／機体が不安定化する（実測で暴走を確認）。
-#     正しい向きの枝が固定できないなら、その開始形態からの推力変形は諦める。
-#   True: 逆枝へリトライする（曲げ向き反転のリスクを承知で経路を探す）。
-RETRY_TO_OPPOSITE_BRANCH = False
 # ---------------------------------------------------------------------------
 
 GIMBAL_ERR_THRESH = 0.02
@@ -161,15 +109,6 @@ STABILIZE_TIMEOUT    = 6.0
 
 GIMBAL_SLEW_TIMEOUT = 20.0
 
-# ---- rev.7: joint1 推力変形（脱力）パラメータ ------------------------------
-JOINT1_CONTROLLER = "/hydrus_xi/servo_controller/joints/controller1/simulation"
-JOINT1_STOP_MARGIN = 0.15   # [rad] 目標の手前で再固定するマージン（行き過ぎ対策）
-JOINT1_LIMIT       = 1.55   # [rad] 可動域端（±）。これに近づいたら強制再start
-JOINT1_LIMIT_GUARD = 0.05   # [rad] 端からこの距離以内で強制停止
-JOINT1_DEFORM_TIMEOUT = 8.0 # [s]  脱力後この時間で目標手前に届かなければ諦めて再start
-JOINT1_MOVE_EPS    = 0.02   # [rad] 「動いた」とみなす最小変化（参考）
-# ---------------------------------------------------------------------------
-
 RELEASE_PSI_RATE_THRESH = 0.01
 RELEASE_HOLD_LOOPS      = 20
 RELEASE_MIN_WAIT        = 1.5
@@ -180,6 +119,8 @@ SWEEP_RATE = 0.02
 
 LOOP_FREQ = 20.0
 DT = 1.0 / LOOP_FREQ
+
+JOINT1_CONTROLLER = "/hydrus_xi/servo_controller/joints/controller1/simulation"
 # ---------------------------------------------------------------------------
 
 
@@ -221,27 +162,13 @@ class GimbalFixedSequencer(object):
         self.branch_cand = {}       # {'a': val, 'b': val}
         self.branch_tried = []      # 試した分枝キー
         self.branch_current = None  # 現在試している分枝キー
-        self.branch_sign = -1.0     # 現在の変形方向 sign（cos 選択用）
         self.slew_start_psi = None  # スルー開始時の psi1（過渡判定用）
-
-        # rev.7: joint1 推力変形（脱力）用
-        self.joint1_detached = False   # controller1 を stop 済みか
-        self.joint1_dir = 0.0          # 変形方向 sign(target-start)
-        self.joint1_stop_at = 0.0      # 手前で固定する角度
-        self.joint1_start_q = 0.0      # 脱力開始時の joint1 角
-
-        # controller_manager サービスプロキシ
-        try:
-            rospy.wait_for_service('/hydrus_xi/controller_manager/switch_controller', timeout=5.0)
-            self.switch_ctrl = rospy.ServiceProxy(
-                '/hydrus_xi/controller_manager/switch_controller', SwitchController)
-        except rospy.ROSException:
-            rospy.logerr("[Seq] switch_controller service unavailable. "
-                         "joint1 thrust-deform will not work.")
-            self.switch_ctrl = None
 
         self.joints_ctrl_pub = rospy.Publisher('/hydrus_xi/joints_ctrl', JointState, queue_size=1)
         self.fix_cmd_pub     = rospy.Publisher('/hydrus_xi/fixed_gimbal_cmd', Float64MultiArray, queue_size=1)
+
+        self.switch_ctrl = rospy.ServiceProxy(
+            '/hydrus_xi/controller_manager/switch_controller', SwitchController)
 
         rospy.Subscriber('/hydrus_xi/joint_states', JointState, self._joint_state_cb)
         rospy.Subscriber('/hydrus_xi/fixed_gimbal_state', Float64MultiArray, self._fix_state_cb)
@@ -334,49 +261,6 @@ class GimbalFixedSequencer(object):
         self.fix_active = False
         self._send_fix_cmd(False, 0.0)
 
-    # ---- rev.7: joint1 の脱力（controller stop）と再固定（controller start） ----
-    def _switch_controller(self, start, stop):
-        """controller_manager/switch_controller を呼ぶ。成功で True。"""
-        if self.switch_ctrl is None:
-            rospy.logerr("[Seq] switch_controller unavailable")
-            return False
-        try:
-            # strictness=1 (BEST_EFFORT)
-            resp = self.switch_ctrl(start_controllers=start,
-                                    stop_controllers=stop,
-                                    strictness=1)
-            return bool(resp.ok)
-        except rospy.ServiceException as e:
-            rospy.logerr("[Seq] switch_controller failed: %s", str(e))
-            return False
-
-    def _detach_joint1(self):
-        """controller1 を stop して joint1 を脱力する。"""
-        ok = self._switch_controller(start=[], stop=[JOINT1_CONTROLLER])
-        if ok:
-            self.joint1_detached = True
-            rospy.loginfo("[Seq] joint1 DETACHED (controller stopped) -> thrust deform")
-        else:
-            rospy.logerr("[Seq] failed to detach joint1")
-        return ok
-
-    def _attach_joint1(self, hold_angle):
-        """
-        controller1 を再 start して joint1 を固定する。
-        再 start 前に、その時点の現在角を目標位置として送っておくことで、
-        行き過ぎからの急な引き戻しを防ぐ（案1）。
-        """
-        # 現在角を joint_targets にセットしてから位置指令を送る
-        self.joint_targets['joint1'] = hold_angle
-        self._send_joint_cmd()
-        ok = self._switch_controller(start=[JOINT1_CONTROLLER], stop=[])
-        if ok:
-            self.joint1_detached = False
-            rospy.loginfo("[Seq] joint1 ATTACHED (controller restarted) at %.4f rad", hold_angle)
-        else:
-            rospy.logerr("[Seq] failed to attach joint1 (controller restart)")
-        return ok
-
     def _goto(self, step):
         self.step = step
         self.step_t0 = rospy.Time.now()
@@ -427,65 +311,27 @@ class GimbalFixedSequencer(object):
         lo, hi = sorted([self.current_q['joint1'], self.target_q['joint1']])
         return (lo < DANGER) and (hi > -DANGER)
 
-    # ---- rev.7 [変更N]: 変形方向で非対称な固定角の 2 候補を作る ----
+    # ---- rev.6 [変更L]: 両分枝の候補を作る ----
     def _compute_branches(self, sign):
         """
-        変形方向 sign から a, b の 2 候補を計算して dict で返す。
-        sign = sign(target_q1 - current_q1)。
-
-          sign < 0（joint1 を減らす, 反モーメントは味方, 小さめに振る）:
-              a =  GIMBAL1_MAG_NEG          （例 +0.3）
-              b =  pi - GIMBAL1_MAG_NEG     （例 +2.84）
-          sign > 0（joint1 を増やす, 反モーメントは逆風, 大きめに振って相殺）:
-              a = -GIMBAL1_MAG_POS          （例 -0.9）
-              b =  GIMBAL1_MAG_POS - pi     （例 -2.24）
-
-        各ペアは b = pi - a（sin 一致・cos 反転）の 2 分枝関係。
-        joint1 モーメントの sin 成分は同一で、cos（横力の向き）が逆。
+        sign から a, b の 2 候補を計算して dict で返す。
+          a = -MAG*SIGN*sign,  b = pi - a   （sin が等しく joint1 モーメント同一）
         """
-        if sign < 0:
-            a = self._norm(GIMBAL1_MAG_NEG)
-            b = self._norm(math.pi - GIMBAL1_MAG_NEG)
-        else:
-            a = self._norm(-GIMBAL1_MAG_POS)
-            b = self._norm(GIMBAL1_MAG_POS - math.pi)
+        a = self._norm(-GIMBAL1_MAG * GIMBAL1_SIGN * sign)
+        b = self._norm(math.pi - a)
         return {'a': a, 'b': b}
 
-    def _order_branches(self, cand, sign):
+    def _order_branches(self, cand):
         """
-        [変更O] 試す順序を「cos の符号」で決める（nearest は廃止）。
-
-        手動実験で判明した符号則:
-          - joint1 を減らす（sign<0）: cos(psi1) > 0 の枝が正しい向きに曲げる。
-          - joint1 を増やす（sign>0）: cos(psi1) < 0 の枝が正しい向きに曲げる。
-        （sign<0 で +0.7 = cos>0 が実際に joint1 を減らす向きへ曲げたことを確認。
-          nearest は逆枝を選んでしまい、joint1 が動かない／機体が不安定化した。）
-
-        正しい向きの枝を先に、逆枝を後に返す。逆枝は特異点回避リトライの
-        フォールバック用に残す（ただし逆枝は曲げ向きが逆なので、リトライで
-        逆枝に落ちた場合は変形の向きが反転する点に注意）。
-
-        FORCE 指定があればそれのみ（検証用）。
+        試す順序を決める。FORCE 指定があればそれのみ。
+        なければ「現在角に近い方」を先に、遠い方を後に。
         """
         if GIMBAL1_FORCE_BRANCH in ('a', 'b'):
             return [GIMBAL1_FORCE_BRANCH]
-
-        want_positive_cos = (sign < 0)   # 減らす向きは cos>0 が正しい
-        ca = math.cos(cand['a'])
-        cb = math.cos(cand['b'])
-
-        # 望む cos 符号を持つ枝を primary にする
-        if want_positive_cos:
-            primary = 'a' if ca >= cb else 'b'
-        else:
-            primary = 'a' if ca <= cb else 'b'
-        secondary = 'b' if primary == 'a' else 'a'
-
-        rospy.loginfo("[Seq] branch order by cos: want_cos%s | a=%+.3f(cos=%+.2f) "
-                      "b=%+.3f(cos=%+.2f) -> primary '%s'",
-                      ">0" if want_positive_cos else "<0",
-                      cand['a'], ca, cand['b'], cb, primary)
-        return [primary, secondary]
+        psi_now = self.fix_current
+        da = abs(self._norm(cand['a'] - psi_now))
+        db = abs(self._norm(cand['b'] - psi_now))
+        return ['a', 'b'] if da <= db else ['b', 'a']
 
     def _check_fc_t_min(self):
         """固定完了後（joint1 変形中）の tau_min ガード"""
@@ -557,10 +403,9 @@ class GimbalFixedSequencer(object):
     def _enter_gimbal_fix(self, d1):
         """分枝候補を用意し、試す順序を決めてスルー開始"""
         sign = 1.0 if d1 >= 0.0 else -1.0
-        self.branch_sign = sign
         self.branch_cand = self._compute_branches(sign)
         self.branch_tried = []
-        order = self._order_branches(self.branch_cand, sign)
+        order = self._order_branches(self.branch_cand)
         self._start_branch(order[0], d1)
 
     def _start_branch(self, key, d1=None):
@@ -575,7 +420,7 @@ class GimbalFixedSequencer(object):
 
     def _step_gimbal_fix(self):
         """(2) gimbal1 を固定角へスルー。rev.6: スルー中 tau_min を監視し、
-             谷を踏んだら逆分枝へリトライする。"""
+              谷を踏んだら逆分枝へリトライする。"""
         self._send_joint_cmd()
         self._hold_fix()
 
@@ -590,27 +435,17 @@ class GimbalFixedSequencer(object):
                           "(< %.2f). this path crosses singularity.",
                           self.branch_current, self.fc_t_min, self.fix_current, SLEW_FC_T_MIN_MIN)
             # [追加K-2] 逆分枝を試す
-            # 注意: primary は cos 符号で選んだ「正しい曲げ向き」の枝。
-            #       逆枝(secondary)は cos 符号が逆 = joint1 の曲げ向きが反転する。
-            #       特異点回避のために逆枝へ落ちると、joint1 が意図と逆に曲がる恐れがある。
             remaining = [k for k in ('a', 'b') if k not in self.branch_tried]
-            if remaining and RETRY_TO_OPPOSITE_BRANCH:
-                rospy.logwarn("[Seq] retrying with the OTHER branch '%s'. "
-                              "WARNING: this branch has opposite cos -> joint1 bending "
-                              "direction may REVERSE. watch joint1 during thrust deform.",
-                              remaining[0])
+            if remaining:
+                rospy.loginfo("[Seq] retrying with the other branch '%s'", remaining[0])
                 self._release_fix()   # 一度解放して psi1 を自由に戻す
                 self._start_branch(remaining[0])
                 return
             else:
-                # 逆枝リトライは既定で無効（RETRY_TO_OPPOSITE_BRANCH=False）。
-                # 正しい曲げ向きの primary が特異点を踏んだ場合、逆枝に落ちると
-                # joint1 が逆に曲がる/暴走するため、abort する。
-                rospy.logerr("[Seq] ABORT: correct-direction branch '%s' crosses singularity "
-                             "during slew (q1_start=%+.3f, psi1=%+.3f). NOT retrying opposite "
-                             "branch (would reverse bending). gimbal-fixed thrust deform is "
-                             "infeasible from this start. consider changing start form / MAG.",
-                             self.branch_current, self.current_q['joint1'], self.fix_current)
+                # [追加K-3] 両分枝とも谷 -> この開始形態からは固定変形不能
+                rospy.logerr("[Seq] ABORT: both branches cross singularity during slew "
+                             "(q1_start=%+.3f). gimbal-fixed joint1 deform is infeasible "
+                             "from this near-singular start.", self.current_q['joint1'])
                 self._release_fix()
                 self.aborted = True
                 self._goto(Step.COMPLETE)
@@ -643,82 +478,31 @@ class GimbalFixedSequencer(object):
             self._goto(Step.JOINT1_SERVO)
 
     def _step_joint1_servo(self):
-        """(4) joint1 を推力変形（脱力）。gimbal1 は固定のまま。
-             [変更M] サーボランプではなく controller1 を stop して脱力し、
-             推力・重力のモーメントで受動的に曲げる。目標の手前 stop_at を
-             越えたら controller1 を再 start して固定する。"""
+        """(4) joint1 をサーボで変形（gimbal1 固定）"""
         self._hold_fix()
-
-        # 脱力中の fc_t_min ガード: 低下したら再固定してから abort
-        if not self.sweep_mode and (self.fix_active and self.fix_enabled) and self.fix_state_received:
-            if self.fc_t_min < FC_T_MIN_REQUIRED:
-                rospy.logerr("[Seq] ABORT during thrust deform: fc_t_min=%.3f < %.3f (q1=%.4f). "
-                             "re-attaching joint1 and releasing gimbal.",
-                             self.fc_t_min, FC_T_MIN_REQUIRED, self.current_q['joint1'])
-                if self.joint1_detached:
-                    self._attach_joint1(self.current_q['joint1'])
-                self._release_fix()
-                self.aborted = True
-                self._goto(Step.COMPLETE)
-                return
-
-        # 初回のみ: 変形方向を決めて脱力
-        if not self.joint1_detached:
-            self.joint1_start_q = self.current_q['joint1']
-            d1 = self._norm(self.target_q['joint1'] - self.joint1_start_q)
-            self.joint1_dir = 1.0 if d1 >= 0.0 else -1.0
-            # 手前で止める角度: 目標より変形方向の手前側に MARGIN
-            self.joint1_stop_at = self.target_q['joint1'] - self.joint1_dir * JOINT1_STOP_MARGIN
-            rospy.loginfo("[Seq] joint1 thrust deform: start=%.3f target=%.3f dir=%+d stop_at=%.3f",
-                          self.joint1_start_q, self.target_q['joint1'],
-                          int(self.joint1_dir), self.joint1_stop_at)
-            self._detach_joint1()
+        if not self._check_fc_t_min():
             return
 
-        q1 = self.current_q['joint1']
+        self._ramp(['joint1'])
+        self._send_joint_cmd()
 
-        # 停止条件の評価
-        # (1) 目標手前に到達: dir*(q1 - stop_at) >= 0
-        reached_stop = (self.joint1_dir * (q1 - self.joint1_stop_at) >= 0.0)
-        # (2) 可動域端に接近: 強制停止
-        near_limit = (abs(q1) >= JOINT1_LIMIT - JOINT1_LIMIT_GUARD)
-        # (3) タイムアウト: 動けない（反モーメントに逆らう方向など）
-        timed_out = (self._elapsed() >= JOINT1_DEFORM_TIMEOUT)
+        rospy.loginfo_throttle(0.5, "[Seq] joint1: q=%.4f tgt=%.4f cmd=%.4f fc_t_min=%.3f",
+                               self.current_q['joint1'], self.target_q['joint1'],
+                               self.joint_targets['joint1'], self.fc_t_min)
 
-        rospy.loginfo_throttle(0.3, "[Seq] joint1(thrust): q=%.4f stop_at=%.4f dir=%+d "
-                               "v=%.3f fc_t_min=%.3f t=%.1f",
-                               q1, self.joint1_stop_at, int(self.joint1_dir),
-                               self.current_dq['joint1'], self.fc_t_min, self._elapsed())
-
-        if reached_stop or near_limit or timed_out:
-            reason = ("reached stop_at" if reached_stop else
-                      "near limit" if near_limit else "timeout")
-            rospy.loginfo("[Seq] joint1 thrust deform stop (%s) at q1=%.4f -> re-attach", reason, q1)
-            # 現在角で固定（案1: 行き過ぎからの引き戻しを起こさない）
-            self._attach_joint1(q1)
-            if timed_out and not reached_stop:
-                rospy.logwarn("[Seq] joint1 did not reach target region within %.1fs "
-                              "(stuck at %.4f, target %.4f). thrust may be insufficient "
-                              "in this direction (anti-torque opposing).",
-                              JOINT1_DEFORM_TIMEOUT, q1, self.target_q['joint1'])
+        if self._reached(['joint1']):
+            rospy.loginfo("[Seq] joint1 deform done (q1=%.4f) -> stabilize", self.current_q['joint1'])
             self._goto(Step.JOINT1_STABILIZE)
 
     def _step_joint1_stabilize(self):
-        """(5) joint1 固定後の静定 -> psi1 解放。
-             ここに来る時点で controller1 は再 start 済み（joint1 は位置保持）。"""
-        # 安全のため、万一 detached のままならここで再固定
-        if self.joint1_detached:
-            rospy.logwarn("[Seq] joint1 still detached at stabilize -> attach now")
-            self._attach_joint1(self.current_q['joint1'])
-
+        """(5) joint1 変形終了・静定 -> psi1 解放"""
         self._send_joint_cmd()
         self._hold_fix()
         if not self._check_fc_t_min():
             return
 
         if self._settled(['joint1']):
-            rospy.loginfo("[Seq] joint1 settled (q1=%.4f, fc_t_min=%.3f) -> release psi1",
-                          self.current_q['joint1'], self.fc_t_min)
+            rospy.loginfo("[Seq] joint1 settled (fc_t_min=%.3f) -> release psi1", self.fc_t_min)
             self._release_fix()
             self._goto(Step.GIMBAL_RELEASE)
 
@@ -787,15 +571,16 @@ class GimbalFixedSequencer(object):
 
         if self._settled(['joint2', 'joint3']):
             rospy.loginfo("[Seq] all settled")
-            self._goto(Step.COMPLETE)
+            self._goto(Step.JOINT1_TRY1)
+
+    def _step_joint1_try1(self):
+        self.switch_ctrl(start_controllers=[],
+                         stop_controllers=[JOINT1_CONTROLLER],
+                         strictness=1)
+        rospy.loginfo("[Seq] joint1_try1: controller1 stopped")
 
     def _step_complete(self):
-        """完了。gimbal1 は自由のまま。
-             安全のため joint1 が脱力されたままなら必ず再固定する。"""
-        if self.joint1_detached:
-            rospy.logwarn("[Seq] joint1 detached at COMPLETE -> re-attaching (safety)")
-            self._attach_joint1(self.current_q['joint1'])
-
+        """完了。gimbal1 は自由のまま"""
         self._send_joint_cmd()
         self._release_fix()
 
@@ -846,15 +631,12 @@ class GimbalFixedSequencer(object):
                 Step.JOINT23_STABILIZE: self._step_joint23_stabilize,
                 Step.COMPLETE:          self._step_complete,
                 Step.SWEEP:             self._step_sweep,
+                Step.JOINT1_TRY1:       self._step_joint1_try1,
             }[self.step]()
         except Exception as e:
             rospy.logerr("[Seq] loop error: %s", str(e))
 
     def new_target(self, q1, q2, q3):
-        # 前回の変形で joint1 が脱力されたままなら再固定
-        if self.joint1_detached:
-            self._attach_joint1(self.current_q['joint1'])
-
         for n in self.joint_names:
             self.joint_targets[n] = self.current_q[n]
         self._send_joint_cmd()
@@ -865,14 +647,10 @@ class GimbalFixedSequencer(object):
         self.prep_used = False
         self.branch_tried = []
         self.branch_current = None
-        self.joint1_detached = False
         self._goto(Step.INIT)
         rospy.loginfo("[Seq] new target: (%.3f, %.3f, %.3f)", q1, q2, q3)
 
     def shutdown(self):
-        # 終了時、脱力したままなら再固定してから止める
-        if self.joint1_detached:
-            self._attach_joint1(self.current_q['joint1'])
         self.timer.shutdown()
 
 
