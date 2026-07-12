@@ -577,12 +577,14 @@ class GimbalFixedSequencer(object):
         # (1) gimbal1 を -0.785 rad に固定する指令を送る
         self.gimbal1_cmd = -0.785
         self._hold_fix()   # fixed_gimbal_cmd [enable=1, -0.785] を送る
-        import time; time.sleep(5)
+        
         # (2) gimbal1 が -0.785 に十分近づくまで待つ（届いてから joint1 を切る）
         if abs(self._norm(self.fix_current - (-0.785))) > 0.05:
             rospy.loginfo_throttle(0.5, "[Seq] joint1_try1: waiting gimbal1 -> -0.785 (now %+.3f)",
                                    self.fix_current)
             return
+        
+        import time; time.sleep(5)
 
         # (3) gimbal1 が到達したら、joint1 のサーボを切る（1回だけ）
         if not getattr(self, '_try1_stopped', False):
