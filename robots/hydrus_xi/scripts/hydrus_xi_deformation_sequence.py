@@ -574,19 +574,19 @@ class GimbalFixedSequencer(object):
             self._goto(Step.JOINT1_TRY1)
 
     def _step_joint1_try1(self):
-        # (1) gimbal1 を -0.4 rad に固定
-        self.gimbal1_cmd = -0.4
+        # (1) gimbal1 を -0.3 rad に固定
+        self.gimbal1_cmd = -0.3
         self._hold_fix()
 
-        # (2) gimbal1 が -0.4 に届くまで待つ
-        if abs(self._norm(self.fix_current - (-0.4))) > 0.05:
+        # (2) gimbal1 が -0.3 に届くまで待つ
+        if abs(self._norm(self.fix_current - (-0.3))) > 0.05:
             rospy.loginfo_throttle(0.5, "[Seq] joint1_try1: waiting gimbal1 -> -0.4 (now %+.3f)",
                                    self.fix_current)
             return
 
         # (2.5) 到達後、少し待ってから切る（sleep ではなく elapsed で）
-        #   gimbal1 到達を確認したステップに入ってから 2 秒待つ
-        if self._elapsed() < 2.0:
+        #   gimbal1 到達を確認したステップに入ってから 4 秒待つ
+        if self._elapsed() < 4.0:
             return
 
         # (3) joint1 のサーボを切る（1回だけ）
