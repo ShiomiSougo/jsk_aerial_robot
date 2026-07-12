@@ -574,16 +574,27 @@ class GimbalFixedSequencer(object):
             self._goto(Step.JOINT1_TRY1)
 
     def _step_joint1_try1(self):
-        # 一度だけ stop する
+        # (1) gimbal1 を -0.785 rad に固定する指令を送る
+        self.gimbal1_cmd = -0.785
+        self._hold_fix()   # fixed_gimbal_cmd [enable=1, -0.785] を送る
+
+        # (2) gimbal1 が -0.785 に十分近づくまで待つ（届いてから joint1 を切る）
+        if abs(self._norm(self.fix_current - (-0.785))) > 0.05:
+            rospy.loginfo_throttle(0.5, "[Seq] joint1_try1: waiting gimbal1 -> -0.785 (now %+.3f)",
+                                   self.fix_current)
+            return
+
+        # (3) gimbal1 が到達したら、joint1 のサーボを切る（1回だけ）
         if not getattr(self, '_try1_stopped', False):
             self.switch_ctrl(start_controllers=[],
                              stop_controllers=[JOINT1_CONTROLLER],
                              strictness=1)
-            rospy.loginfo("[Seq] joint1_try1: controller1 stopped")
+            rospy.loginfo("[Seq] joint1_try1: gimbal1 fixed at %+.3f, controller1 stopped",
+                          self.fix_current)
             self._try1_stopped = True
         # 以降このステップに留まり、_send_joint_cmd() を呼ばない。
         # joint1 への位置指令が止まるので脱力が維持される。
-        
+
     def _step_complete(self):
         """完了。gimbal1 は自由のまま"""
         self._send_joint_cmd()
