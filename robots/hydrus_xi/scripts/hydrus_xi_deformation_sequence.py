@@ -123,11 +123,11 @@ class Step(Enum):
 #         候補 = -GIMBAL1_MAG_POS  または  GIMBAL1_MAG_POS - pi
 #   各ペアは現在の gimbal1 角に近い方を選ぶ（nearest）。
 #   ペア内の 2 値は sin が等しく joint1 モーメント同一、cos が逆（2 分枝）。
-GIMBAL1_MAG_NEG = 0.7    # [rad] joint1 を減らす向きのときの固定角の大きさ
-GIMBAL1_MAG_POS = 0.9    # [rad] joint1 を増やす向きのときの固定角の大きさ
+GIMBAL1_MAG_NEG = 0.1    # [rad] joint1 を減らす向きのときの固定角の大きさ
+GIMBAL1_MAG_POS = 0.4    # [rad] joint1 を増やす向きのときの固定角の大きさ
 
 # 分枝の強制。None なら nearest から開始し、失敗したら逆枝へ自動リトライ。
-GIMBAL1_FORCE_BRANCH = 'a'#Noneにすぐ戻そう
+GIMBAL1_FORCE_BRANCH = None
 
 # ---- 特異点通過の事前準備 ---------------------------------------------------
 DANGER      = 0.25     # [rad] 危険帯 [-DANGER, +DANGER]
@@ -213,6 +213,7 @@ class GimbalFixedSequencer(object):
         self.branch_cand = {}       # {'a': val, 'b': val}
         self.branch_tried = []      # 試した分枝キー
         self.branch_current = None  # 現在試している分枝キー
+        self.branch_sign = -1.0     # 現在の変形方向 sign（cos 選択用）
         self.slew_start_psi = None  # スルー開始時の psi1（過渡判定用）
 
         # rev.7: joint1 推力変形（脱力）用
@@ -425,11 +426,11 @@ class GimbalFixedSequencer(object):
         sign = sign(target_q1 - current_q1)。
 
           sign < 0（joint1 を減らす, 反モーメントは味方, 小さめに振る）:
-              a =  GIMBAL1_MAG_NEG          （例 +0.1）
-              b =  pi - GIMBAL1_MAG_NEG     （例 +3.04）
+              a =  GIMBAL1_MAG_NEG          （例 +0.3）
+              b =  pi - GIMBAL1_MAG_NEG     （例 +2.84）
           sign > 0（joint1 を増やす, 反モーメントは逆風, 大きめに振って相殺）:
-              a = -GIMBAL1_MAG_POS          （例 -0.4）
-              b =  GIMBAL1_MAG_POS - pi     （例 -2.74）
+              a = -GIMBAL1_MAG_POS          （例 -0.9）
+              b =  GIMBAL1_MAG_POS - pi     （例 -2.24）
 
         各ペアは b = pi - a（sin 一致・cos 反転）の 2 分枝関係。
         joint1 モーメントの sin 成分は同一で、cos（横力の向き）が逆。
@@ -442,17 +443,41 @@ class GimbalFixedSequencer(object):
             b = self._norm(GIMBAL1_MAG_POS - math.pi)
         return {'a': a, 'b': b}
 
-    def _order_branches(self, cand):
+    def _order_branches(self, cand, sign):
         """
-        試す順序を決める。FORCE 指定があればそれのみ。
-        なければ「現在の gimbal1 角に近い方」を先に、遠い方を後に。
+        [変更O] 試す順序を「cos の符号」で決める（nearest は廃止）。
+
+        手動実験で判明した符号則:
+          - joint1 を減らす（sign<0）: cos(psi1) > 0 の枝が正しい向きに曲げる。
+          - joint1 を増やす（sign>0）: cos(psi1) < 0 の枝が正しい向きに曲げる。
+        （sign<0 で +0.7 = cos>0 が実際に joint1 を減らす向きへ曲げたことを確認。
+          nearest は逆枝を選んでしまい、joint1 が動かない／機体が不安定化した。）
+
+        正しい向きの枝を先に、逆枝を後に返す。逆枝は特異点回避リトライの
+        フォールバック用に残す（ただし逆枝は曲げ向きが逆なので、リトライで
+        逆枝に落ちた場合は変形の向きが反転する点に注意）。
+
+        FORCE 指定があればそれのみ（検証用）。
         """
         if GIMBAL1_FORCE_BRANCH in ('a', 'b'):
             return [GIMBAL1_FORCE_BRANCH]
-        psi_now = self.fix_current
-        da = abs(self._norm(cand['a'] - psi_now))
-        db = abs(self._norm(cand['b'] - psi_now))
-        return ['a', 'b'] if da <= db else ['b', 'a']
+
+        want_positive_cos = (sign < 0)   # 減らす向きは cos>0 が正しい
+        ca = math.cos(cand['a'])
+        cb = math.cos(cand['b'])
+
+        # 望む cos 符号を持つ枝を primary にする
+        if want_positive_cos:
+            primary = 'a' if ca >= cb else 'b'
+        else:
+            primary = 'a' if ca <= cb else 'b'
+        secondary = 'b' if primary == 'a' else 'a'
+
+        rospy.loginfo("[Seq] branch order by cos: want_cos%s | a=%+.3f(cos=%+.2f) "
+                      "b=%+.3f(cos=%+.2f) -> primary '%s'",
+                      ">0" if want_positive_cos else "<0",
+                      cand['a'], ca, cand['b'], cb, primary)
+        return [primary, secondary]
 
     def _check_fc_t_min(self):
         """固定完了後（joint1 変形中）の tau_min ガード"""
@@ -524,9 +549,10 @@ class GimbalFixedSequencer(object):
     def _enter_gimbal_fix(self, d1):
         """分枝候補を用意し、試す順序を決めてスルー開始"""
         sign = 1.0 if d1 >= 0.0 else -1.0
+        self.branch_sign = sign
         self.branch_cand = self._compute_branches(sign)
         self.branch_tried = []
-        order = self._order_branches(self.branch_cand)
+        order = self._order_branches(self.branch_cand, sign)
         self._start_branch(order[0], d1)
 
     def _start_branch(self, key, d1=None):
@@ -556,9 +582,15 @@ class GimbalFixedSequencer(object):
                           "(< %.2f). this path crosses singularity.",
                           self.branch_current, self.fc_t_min, self.fix_current, SLEW_FC_T_MIN_MIN)
             # [追加K-2] 逆分枝を試す
+            # 注意: primary は cos 符号で選んだ「正しい曲げ向き」の枝。
+            #       逆枝(secondary)は cos 符号が逆 = joint1 の曲げ向きが反転する。
+            #       特異点回避のために逆枝へ落ちると、joint1 が意図と逆に曲がる恐れがある。
             remaining = [k for k in ('a', 'b') if k not in self.branch_tried]
             if remaining:
-                rospy.loginfo("[Seq] retrying with the other branch '%s'", remaining[0])
+                rospy.logwarn("[Seq] retrying with the OTHER branch '%s'. "
+                              "WARNING: this branch has opposite cos -> joint1 bending "
+                              "direction may REVERSE. watch joint1 during thrust deform.",
+                              remaining[0])
                 self._release_fix()   # 一度解放して psi1 を自由に戻す
                 self._start_branch(remaining[0])
                 return
