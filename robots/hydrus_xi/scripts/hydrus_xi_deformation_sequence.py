@@ -574,29 +574,38 @@ class GimbalFixedSequencer(object):
             self._goto(Step.JOINT1_TRY1)
 
     def _step_joint1_try1(self):
-        # (1) gimbal1 を -0.3 rad に固定
-        self.gimbal1_cmd = -0.3
+        gimbal_angle = -0.3   # ここを変えれば速さ調整（0に近いほど遅い）
+
+        # (1) gimbal1 を固定
+        self.gimbal1_cmd = gimbal_angle
         self._hold_fix()
 
-        # (2) gimbal1 が -0.3 に届くまで待つ
-        if abs(self._norm(self.fix_current - (-0.3))) > 0.05:
-            rospy.loginfo_throttle(0.5, "[Seq] joint1_try1: waiting gimbal1 -> -0.4 (now %+.3f)",
-                                   self.fix_current)
+        # (2) gimbal1 が目標に届くまで待つ
+        if abs(self._norm(self.fix_current - gimbal_angle)) > 0.05:
+            rospy.loginfo_throttle(0.5, "[Seq] joint1_try1: waiting gimbal1 -> %+.3f (now %+.3f)",
+                                   gimbal_angle, self.fix_current)
             return
 
-        # (2.5) 到達後、少し待ってから切る（sleep ではなく elapsed で）
-        #   gimbal1 到達を確認したステップに入ってから 4 秒待つ
-        if self._elapsed() < 4.0:
+        # (2.5) 到達したら、その時刻を記録して安定化の待ちを始める
+        if not getattr(self, '_try1_reached_t', None):
+            self._try1_reached_t = rospy.Time.now()
+            rospy.loginfo("[Seq] joint1_try1: gimbal1 reached %+.3f, waiting to settle", self.fix_current)
+
+        # (2.6) 機体が安定するまで待つ（関節速度が十分小さくなるまで）
+        settled = all(abs(self.current_dq[j]) < STABILIZE_VEL_THRESH for j in self.joint_names)
+        waited = (rospy.Time.now() - self._try1_reached_t).to_sec()
+        if not settled and waited < 6.0:   # 安定するか、最大6秒待つ
+            rospy.loginfo_throttle(0.5, "[Seq] joint1_try1: settling... (%.1fs)", waited)
             return
 
-        # (3) joint1 のサーボを切る（1回だけ）
+        # (3) 安定したら joint1 のサーボを切る（1回だけ）
         if not getattr(self, '_try1_stopped', False):
             self.switch_ctrl(start_controllers=[],
                              stop_controllers=[JOINT1_CONTROLLER],
                              strictness=1)
-            rospy.loginfo("[Seq] joint1_try1: gimbal1 fixed at %+.3f, controller1 stopped",
-                          self.fix_current)
+            rospy.loginfo("[Seq] joint1_try1: settled, controller1 stopped")
             self._try1_stopped = True
+        # 以降このステップに留まり、_send_joint_cmd() を呼ばない。
 
     def _step_complete(self):
         """完了。gimbal1 は自由のまま"""
