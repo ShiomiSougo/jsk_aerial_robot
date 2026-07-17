@@ -82,6 +82,12 @@ namespace aerial_robot_navigation
      *   無名名前空間の applyGimbalAngles() から planner-> 経由で呼ぶため public。 */
     std::vector<double> composeGimbalAngles(const std::vector<double>& x);
 
+    /* ★段階1（確認用・あとで消す）: scanGimbal1TauMin() 用アクセサ。
+     *   固定対象ジンバルの位置と、現在の全ジンバル角を無名名前空間から読む。
+     *   検証が終わったらこの 2 つも一緒に削除する。 */
+    int getFixGimbalIdx() const { return fix_gimbal_idx_; }
+    const std::vector<double>& getOptGimbalAngles() const { return opt_gimbal_angles_; }
+
   private:
     ros::Publisher gimbal_ctrl_pub_;
     std::thread plan_thread_;

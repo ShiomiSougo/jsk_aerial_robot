@@ -1,5 +1,6 @@
 #include <hydrus_xi/hydrus_xi_under_actuated_navigation.h>
 #include <std_msgs/Float64MultiArray.h>
+#include <iomanip>   /* ★段階1: scanGimbal1TauMin の std::setprecision に必要 */
 
 using namespace aerial_robot_navigation;
 
@@ -21,6 +22,11 @@ using namespace aerial_robot_navigation;
  *    - stabilityCheck の無効化 / 閾値のハードコード上書き
  *  これらは本改造では不要。psi_1 を固定した時点で内部モーメントは
  *  静止推力 lambda_1 のスカラー倍として一意に決まるため。
+ *
+ *  ★段階1（確認用・あとで消す）:
+ *    gimbal1 を全周スキャンして τmin プロファイルを ROS_INFO へ出す。
+ *    計算のみで指令は出さないため機体は動かない。検証が済んだら
+ *    scanGimbal1TauMin() とその呼び出し、およびヘッダのアクセサを削除する。
  * ========================================================================== */
 
 namespace
@@ -171,6 +177,47 @@ namespace
     while(a >  M_PI) a -= 2 * M_PI;
     while(a < -M_PI) a += 2 * M_PI;
     return a;
+  }
+
+  /* ★段階1（確認用・あとで消す）: gimbal1 を全周スキャンして τmin プロファイルを計算する。
+   *   - 計算のみ。gimbal_ctrl_pub_ には何も出さないので機体は動かない。
+   *   - 他のジンバル角・関節角は現在値のまま、fix 対象だけを -pi..pi で振る。
+   *   - モデル上の評価なので、危険な角度を実機で通過する必要がない。
+   *   注意: updateRobotModel() でモデル内部状態を書き換えるため、
+   *         終了時に呼び出し前の角度へ必ず戻すこと（次周期の stabilityCheck が汚れる）。 */
+  void scanGimbal1TauMin(HydrusXiUnderActuatedNavigator *planner)
+  {
+    auto robot_model = planner->getRobotModelForPlan();
+    const int fix_idx = planner->getFixGimbalIdx();
+    if(fix_idx < 0) return;
+
+    const std::vector<double> cur_gimbals = planner->getOptGimbalAngles(); // ★値コピー（復元用に保持）
+    if(cur_gimbals.size() == 0) return;
+
+    std::vector<double> gimbals = cur_gimbals;
+    std::stringstream ss;
+    ss << std::fixed << std::setprecision(3);
+
+    /* ★ モデル更新のラムダ。スキャン本体と復元処理で共用する */
+    auto update = [&](const std::vector<double>& g)
+      {
+        KDL::JntArray jp = planner->getJointPositionsForPlan();
+        for(int i = 0; i < g.size(); i++)
+          jp(planner->getControlIndices().at(i)) = g.at(i);
+        robot_model->updateRobotModel(jp);
+      };
+
+    for(double th = -M_PI; th <= M_PI + 1e-9; th += 0.05)
+      {
+        gimbals.at(fix_idx) = th;   // fix 対象だけ th に差し替え
+        update(gimbals);
+        ss << th << "," << robot_model->getFeasibleControlTMin() << " ";
+      }
+
+    ROS_INFO_STREAM("[scan] gimbal1 tau_min profile: " << ss.str());
+
+    /* ★ モデルをスキャン前（採用解）の状態へ復元 */
+    update(cur_gimbals);
   }
 };
 
@@ -528,6 +575,17 @@ bool HydrusXiUnderActuatedNavigator::plan()
       gimbal_msg.name.push_back(control_gimbal_names_.at(i));
       gimbal_msg.position.push_back(opt_gimbal_angles_.at(i));
     }
+
+  /* ★段階1: 一度だけスキャンして実測と比較する（確認用・あとで消す）。
+   *   static で1回のみ。毎周期回すと 126 点 × updateRobotModel で重い。
+   *   publish 直前に置くが、gimbal_msg は既に構築済みなのでスキャン結果は指令に影響しない。 */
+  static bool scan_done = false;
+  if(!scan_done && !first_run)
+    {
+      scanGimbal1TauMin(this);
+      scan_done = true;
+    }
+
   gimbal_ctrl_pub_.publish(gimbal_msg);
 
   /* ---- ★ 状態フィードバック（Python 側の遷移判定に使う） ----------------- */
