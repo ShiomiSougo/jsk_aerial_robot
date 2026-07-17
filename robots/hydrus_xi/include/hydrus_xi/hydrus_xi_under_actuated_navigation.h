@@ -82,22 +82,10 @@ namespace aerial_robot_navigation
      *   無名名前空間の applyGimbalAngles() から planner-> 経由で呼ぶため public。 */
     std::vector<double> composeGimbalAngles(const std::vector<double>& x);
 
-    /* ★段階1（確認用・あとで消す）: scanGimbal1TauMin() 用アクセサ。
-     *   固定対象ジンバルの位置と、現在の全ジンバル角を無名名前空間から読む。
-     *   検証が終わったらこの 3 つも一緒に削除する。 */
-    boost::shared_ptr<HydrusTiltedRobotModel> getRobotModelForScan() { return robot_model_for_scan_; }
-    int getFixGimbalIdx() const { return fix_gimbal_idx_; }
-    const std::vector<double>& getOptGimbalAngles() const { return opt_gimbal_angles_; }
-
   private:
     ros::Publisher gimbal_ctrl_pub_;
     std::thread plan_thread_;
     boost::shared_ptr<HydrusTiltedRobotModel> robot_model_for_plan_;
-    /* ★段階1（確認用・あとで消す）: スキャン専用モデル。
-     *   robot_model_for_plan_ は LQI gain generator と共有されているため、
-     *   スキャン中の一時状態が漏れて "invalid pose" を引き起こす。
-     *   誰とも共有しない別インスタンスを持ち、そちらを振り回す。 */
-    boost::shared_ptr<HydrusTiltedRobotModel> robot_model_for_scan_;
     OsqpEigen::Solver yaw_range_lp_solver_;
     boost::shared_ptr<nlopt::opt> vectoring_nl_solver_;  // 未使用（互換のため残置）
 
