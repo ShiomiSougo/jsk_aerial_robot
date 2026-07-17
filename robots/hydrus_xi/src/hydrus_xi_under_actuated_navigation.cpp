@@ -579,12 +579,12 @@ bool HydrusXiUnderActuatedNavigator::plan()
   /* ★段階1: 一度だけスキャンして実測と比較する（確認用・あとで消す）。
    *   static で1回のみ。毎周期回すと 126 点 × updateRobotModel で重い。
    *   publish 直前に置くが、gimbal_msg は既に構築済みなのでスキャン結果は指令に影響しない。 */
-  static bool scan_done = false;
-  if(!scan_done && !first_run)
-    {
-      scanGimbal1TauMin(this);
-      scan_done = true;
-    }
+  //static bool scan_done = false;
+  //if(!scan_done && !first_run)
+  //  {
+  //    scanGimbal1TauMin(this);
+  //    scan_done = true;
+  //  }
 
   gimbal_ctrl_pub_.publish(gimbal_msg);
 
