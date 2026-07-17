@@ -574,6 +574,31 @@ class GimbalFixedSequencer(object):
             self._goto(Step.JOINT1_TRY1)
 
     def _step_joint1_try1(self):
+        if not getattr(self, '_spin_done', False):
+            # 初回: 現在角から開始
+            if not hasattr(self, '_spin_cmd'):
+                self._spin_cmd = self.fix_current
+                self._spin_travel = 0.0
+                rospy.loginfo("[Seq] joint1_try1: start gimbal1 spin from %+.3f (joint1 still held)",
+                              self._spin_cmd)
+
+            # 少しずつ目標角を進める（0.02 rad/loop = 0.4 rad/s @20Hz）
+            self._spin_cmd = self._norm(self._spin_cmd + 0.02)
+            self._spin_travel += 0.02
+            self.gimbal1_cmd = self._spin_cmd
+            self._hold_fix()
+            self._send_joint_cmd()   # joint は保持したまま
+
+            # gimbal 角ごとの安定性指標を記録
+            rospy.loginfo_throttle(0.25, "[Seq] spin: gimbal=%+.4f fc_t_min=%.3f travel=%.2f/%.2f",
+                                   self.fix_current, self.fc_t_min,
+                                   self._spin_travel, 2 * math.pi)
+
+            if self._spin_travel >= 2 * math.pi:
+                rospy.loginfo("[Seq] joint1_try1: spin done (1 revolution)")
+                self._spin_done = True
+            return
+        
         gimbal_angle = -0.4 # ここを変えれば速さ調整（0に近いほど遅い）角度を増やす方向は-0.4で確定 減らすなら0.35付近
 
         # (1) gimbal1 を固定
