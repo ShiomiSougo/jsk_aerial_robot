@@ -179,45 +179,43 @@ namespace
     return a;
   }
 
-  /* ★段階1（確認用・あとで消す）: gimbal1 を全周スキャンして τmin プロファイルを計算する。
+  /* ★段階1（確認用・あとで消す）: gimbal1 の全周 τmin プロファイルを計算する。
    *   - 計算のみ。gimbal_ctrl_pub_ には何も出さないので機体は動かない。
    *   - 他のジンバル角・関節角は現在値のまま、fix 対象だけを -pi..pi で振る。
    *   - モデル上の評価なので、危険な角度を実機で通過する必要がない。
-   *   注意: updateRobotModel() でモデル内部状態を書き換えるため、
-   *         終了時に呼び出し前の角度へ必ず戻すこと（次周期の stabilityCheck が汚れる）。 */
+   *   ★案1: robot_model_for_plan_ は LQI gain generator と共有されており、
+   *          スキャン中の一時状態が漏れて "invalid pose" を引き起こす。
+   *          そこで専用インスタンス robot_model_for_scan_ を使う。
+   *          誰も参照していないので、書き換えっぱなしでよい（復元不要）。 */
   void scanGimbal1TauMin(HydrusXiUnderActuatedNavigator *planner)
   {
-    auto robot_model = planner->getRobotModelForPlan();
+    auto scan_model = planner->getRobotModelForScan();   // ★専用モデル
+    if(!scan_model) return;
+
     const int fix_idx = planner->getFixGimbalIdx();
     if(fix_idx < 0) return;
 
-    const std::vector<double> cur_gimbals = planner->getOptGimbalAngles(); // ★値コピー（復元用に保持）
+    const std::vector<double> cur_gimbals = planner->getOptGimbalAngles();
     if(cur_gimbals.size() == 0) return;
 
     std::vector<double> gimbals = cur_gimbals;
     std::stringstream ss;
     ss << std::fixed << std::setprecision(3);
 
-    /* ★ モデル更新のラムダ。スキャン本体と復元処理で共用する */
-    auto update = [&](const std::vector<double>& g)
-      {
-        KDL::JntArray jp = planner->getJointPositionsForPlan();
-        for(int i = 0; i < g.size(); i++)
-          jp(planner->getControlIndices().at(i)) = g.at(i);
-        robot_model->updateRobotModel(jp);
-      };
-
     for(double th = -M_PI; th <= M_PI + 1e-9; th += 0.05)
       {
         gimbals.at(fix_idx) = th;   // fix 対象だけ th に差し替え
-        update(gimbals);
-        ss << th << "," << robot_model->getFeasibleControlTMin() << " ";
+
+        KDL::JntArray jp = planner->getJointPositionsForPlan();
+        for(int i = 0; i < gimbals.size(); i++)
+          jp(planner->getControlIndices().at(i)) = gimbals.at(i);
+
+        scan_model->updateRobotModel(jp);                 // ★専用モデルを更新
+        ss << th << "," << scan_model->getFeasibleControlTMin() << " ";
       }
 
+    /* 専用モデルなので、元に戻す必要はない（誰も参照していない） */
     ROS_INFO_STREAM("[scan] gimbal1 tau_min profile: " << ss.str());
-
-    /* ★ モデルをスキャン前（採用解）の状態へ復元 */
-    update(cur_gimbals);
   }
 };
 
@@ -253,6 +251,7 @@ void HydrusXiUnderActuatedNavigator::initialize(ros::NodeHandle nh, ros::NodeHan
   BaseNavigator::initialize(nh, nhp, robot_model, estimator, loop_du);
 
   robot_model_for_plan_ = boost::make_shared<HydrusTiltedRobotModel>(); // for planning, not the real robot model
+  robot_model_for_scan_ = boost::make_shared<HydrusTiltedRobotModel>(); // ★段階1: スキャン専用（LQIに影響させない）
 
   rosParamInit();
 
@@ -579,12 +578,12 @@ bool HydrusXiUnderActuatedNavigator::plan()
   /* ★段階1: 一度だけスキャンして実測と比較する（確認用・あとで消す）。
    *   static で1回のみ。毎周期回すと 126 点 × updateRobotModel で重い。
    *   publish 直前に置くが、gimbal_msg は既に構築済みなのでスキャン結果は指令に影響しない。 */
-  //static bool scan_done = false;
-  //if(!scan_done && !first_run)
-  //  {
-  //    scanGimbal1TauMin(this);
-  //    scan_done = true;
-  //  }
+  static bool scan_done = false;
+  if(!scan_done && !first_run)
+    {
+      scanGimbal1TauMin(this);
+      scan_done = true;
+    }
 
   gimbal_ctrl_pub_.publish(gimbal_msg);
 
