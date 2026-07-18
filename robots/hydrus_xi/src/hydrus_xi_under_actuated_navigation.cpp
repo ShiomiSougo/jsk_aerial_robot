@@ -189,7 +189,7 @@ HydrusXiUnderActuatedNavigator::HydrusXiUnderActuatedNavigator():
     active_fix_enabled_(false),
     active_fix_idx_(-1),
     active_fix_angle_(0.0),
-    last_fc_t_min_(0.0)
+    last_fc_t_min_(0.0),
     last_invalid_cnt_(0),      // ★ 追加
     last_max_jump_(0.0)        // ★ 追加
 {
@@ -578,7 +578,7 @@ bool HydrusXiUnderActuatedNavigator::plan()
   state_msg.data[4] = active_fix_enabled_
                     ? fabs(normalizeAngle(target - active_fix_angle_)) : M_PI;
   fix_gimbal_state_pub_.publish(state_msg);
-  
+
   /* ★ [追加] 診断情報のpublish */
   std_msgs::Float64MultiArray debug_msg;
   debug_msg.data.resize(4);
