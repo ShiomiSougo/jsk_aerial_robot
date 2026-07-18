@@ -2,13 +2,37 @@
 # -*- coding: utf-8 -*-
 
 """
-Hydrus-Xi 変形シーケンス（gimbal1 固定・joint1 サーボ駆動版）rev.7
+Hydrus-Xi 変形シーケンス（gimbal1 固定・joint1 サーボ駆動版）rev.8
 
 目的:
   psi_1 (gimbal1 の vectoring 角) を固定したまま joint1 の変形を成立させる。
 
 --------------------------------------------------------------------------
-rev.7 での変更（rev.6 からの差分）— plan_debug 診断ログの統合
+rev.8 での変更（rev.7 からの差分）— スピン速度の可変化（対策A）
+--------------------------------------------------------------------------
+[追加N] fc_t_min に応じてgimbal1スピン速度を落とす（ヒステリシス付き）。
+
+        rev.7までの調査で、gimbal1スピン中にfc_t_minの谷（特異点近傍）を
+        通過する際、C++側nloptの探索範囲(±0.2rad)内では十分な解を
+        見つけられず stabilityCheck NG -> 探索範囲がPIへリセット -> 
+        gimbal2,3,4が不連続にジャンプ、という現象が（毎回ではないが）
+        発生することが確認された。同時刻に実機側LQIゲイン生成も
+        一時停止しており、最も危険な組み合わせになっていた。
+
+        対策として、fc_t_minが小さくなったらスピン速度自体を落とし、
+        nloptが±0.2radの狭い探索範囲内でも解を追従しやすくすることで、
+        PIリセット自体の発生を抑制できないか検証する。
+
+        (N-1) SPIN_SLOWDOWN_ENTER を下回ったら減速モードに入る。
+        (N-2) SPIN_SLOWDOWN_EXIT を上回ったら通常速度に戻す
+              （ENTER/EXITを別値にしてヒステリシスを持たせ、閾値付近での
+              頻繁な速度切り替え＝ガタつきを防ぐ）。
+        (N-3) スピンログに rate（実際に使われた速度）と slow（減速中か）
+              を追記し、後で「減速がPIリセット回避に効いたか」を
+              plan_debugのjump/stab_okと突き合わせて検証できるようにする。
+
+--------------------------------------------------------------------------
+継続している変更（rev.7 まで）
 --------------------------------------------------------------------------
 [追加M] /hydrus_xi/plan_debug (C++側 navigator の診断トピック) を購読し、
         スピンテスト中のログに統合。
@@ -24,9 +48,6 @@ rev.7 での変更（rev.6 からの差分）— plan_debug 診断ログの統�
               即座に warn 出力し、谷とジャンプの時刻相関を取りこぼさない
               ようにする。
 
---------------------------------------------------------------------------
-継続している変更（rev.6 まで）
---------------------------------------------------------------------------
 [追加K] psi1 スルー中の tau_min ガードと分枝リトライ。
 
         残課題B: 開始形態が直線近傍（q1≈0）だと、psi1 を固定角へスルーする
@@ -57,14 +78,14 @@ rev.7 での変更（rev.6 からの差分）— plan_debug 診断ログの統�
 [修正A/追加C] 固定完了判定、sweep モード。
 
 --------------------------------------------------------------------------
-既知の残課題（rev.7 でも未解決）
+既知の残課題（rev.8 でも未解決）
 --------------------------------------------------------------------------
 残課題A: 目標の joint3 が符号反転すると joint2,3 畳み直しで特異点を踏む。
          （例: -0.9 0.3 -0.3）。本 rev では未対策。
 
-残課題B-2: gimbal1 スピン中の tau_min 谷における不連続ジャンプの原因調査中。
-           本 rev では観測のみ（plan_debug ログ統合）。対策（レート制限や
-           段階的探索範囲拡大など）は次 rev 以降で検討。
+残課題B-2: スピン速度の可変化（本rev）でPIリセットの発生頻度がどう変わるか
+           はまだ未検証。閾値(SPIN_SLOWDOWN_ENTER/EXIT)と減速率
+           (SPIN_RATE_SLOW)のチューニングは次rev以降の課題。
 
 使用例:
   rosrun hydrus_xi hydrus_xi_gimbal_fixed_sequence.py -0.9 0.3 0.3
@@ -117,6 +138,16 @@ SLEW_GUARD_MIN_TRAVEL = 0.15  # [rad] スルー開始直後の過渡を無視す
 # ---- rev.7 [追加M]: plan_debug ジャンプ即時警告のしきい値 --------------------
 JUMP_WARN_THRESH = 0.3   # [rad] gimbal2,3,4 の前周期解との差分がこれを超えたら
                           #       throttle なしで即座に warn（谷通過の瞬間を取りこぼさない）
+# ---------------------------------------------------------------------------
+
+# ---- rev.8 [追加N]: fc_t_min に応じたスピン速度の可変化 ----------------------
+SPIN_RATE_NORMAL = 0.02    # [rad/loop] 通常速度（従来のまま、20Hzで0.4rad/s）
+SPIN_RATE_SLOW    = 0.005  # [rad/loop] 減速時の速度（通常の1/4、20Hzで0.1rad/s）
+
+SPIN_SLOWDOWN_ENTER = 2.0  # [Nm] fc_t_minがこれを下回ったら減速モードに入る
+SPIN_SLOWDOWN_EXIT  = 3.0  # [Nm] fc_t_minがこれを上回ったら通常速度に戻す
+                            #      (ENTER < EXIT のヒステリシスで、閾値付近の
+                            #       頻繁な切り替えを防ぐ)
 # ---------------------------------------------------------------------------
 
 GIMBAL_ERR_THRESH = 0.02
@@ -186,6 +217,9 @@ class GimbalFixedSequencer(object):
         self.branch_tried = []      # 試した分枝キー
         self.branch_current = None  # 現在試している分枝キー
         self.slew_start_psi = None  # スルー開始時の psi1（過渡判定用）
+
+        # rev.8 [追加N]: スピン速度可変化用の状態
+        self.spin_slow_mode = False  # 現在減速中かどうか
 
         self.joints_ctrl_pub = rospy.Publisher('/hydrus_xi/joints_ctrl', JointState, queue_size=1)
         self.fix_cmd_pub     = rospy.Publisher('/hydrus_xi/fixed_gimbal_cmd', Float64MultiArray, queue_size=1)
@@ -621,22 +655,41 @@ class GimbalFixedSequencer(object):
             if not hasattr(self, '_spin_cmd'):
                 self._spin_cmd = self.fix_current
                 self._spin_travel = 0.0
+                self.spin_slow_mode = False
                 rospy.loginfo("[Seq] joint1_try1: start gimbal1 spin from %+.3f (joint1 still held)",
                               self._spin_cmd)
 
-            # 少しずつ目標角を進める（0.02 rad/loop = 0.4 rad/s @20Hz）
-            self._spin_cmd = self._norm(self._spin_cmd + 0.02)
-            self._spin_travel += 0.02
+            # rev.8 [追加N]: fc_t_min に応じてスピン速度を切り替える（ヒステリシス付き）
+            #   減速中(spin_slow_mode=True)は EXIT を上回るまで解除しない。
+            #   通常中(spin_slow_mode=False)は ENTER を下回ったら減速に入る。
+            if self.spin_slow_mode:
+                if self.fc_t_min > SPIN_SLOWDOWN_EXIT:
+                    self.spin_slow_mode = False
+                    rospy.loginfo("[Seq] spin: SLOWDOWN released (fc_t_min=%.3f > %.2f)",
+                                  self.fc_t_min, SPIN_SLOWDOWN_EXIT)
+            else:
+                if self.fc_t_min < SPIN_SLOWDOWN_ENTER:
+                    self.spin_slow_mode = True
+                    rospy.loginfo("[Seq] spin: SLOWDOWN engaged (fc_t_min=%.3f < %.2f)",
+                                  self.fc_t_min, SPIN_SLOWDOWN_ENTER)
+
+            current_rate = SPIN_RATE_SLOW if self.spin_slow_mode else SPIN_RATE_NORMAL
+
+            # 少しずつ目標角を進める（速度は上記で決定した current_rate を使用）
+            self._spin_cmd = self._norm(self._spin_cmd + current_rate)
+            self._spin_travel += current_rate
             self.gimbal1_cmd = self._spin_cmd
             self._hold_fix()
             self._send_joint_cmd()   # joint は保持したまま
 
-            # rev.7 [追加M-2]: gimbal 角ごとの安定性指標 + plan_debug を記録
+            # rev.8 [追加N-3] / rev.7 [追加M-2]: gimbal 角ごとの安定性指標 + plan_debug
+            #   に加え、実際に使われたスピン速度(rate)と減速中か(slow)を記録
             rospy.loginfo_throttle(
                 0.25,
-                "[Seq] spin: gimbal=%+.4f fc_t_min=%.3f travel=%.2f/%.2f "
+                "[Seq] spin: gimbal=%+.4f fc_t_min=%.3f travel=%.2f/%.2f rate=%.4f slow=%d "
                 "| stab_ok=%d delta=%.2f invalid=%d jump=%.3f",
                 self.fix_current, self.fc_t_min, self._spin_travel, 2 * math.pi,
+                current_rate, int(self.spin_slow_mode),
                 int(self.plan_debug['stab_ok']), self.plan_debug['delta'],
                 int(self.plan_debug['invalid']), self.plan_debug['jump'])
 
@@ -645,10 +698,10 @@ class GimbalFixedSequencer(object):
             if self.plan_debug['jump'] > JUMP_WARN_THRESH:
                 rospy.logwarn(
                     "[Seq] spin: JUMP EVENT gimbal=%+.4f fc_t_min=%.3f jump=%.3f "
-                    "invalid=%d stab_ok=%d delta=%.2f",
+                    "invalid=%d stab_ok=%d delta=%.2f slow=%d",
                     self.fix_current, self.fc_t_min, self.plan_debug['jump'],
                     int(self.plan_debug['invalid']), int(self.plan_debug['stab_ok']),
-                    self.plan_debug['delta'])
+                    self.plan_debug['delta'], int(self.spin_slow_mode))
 
             if self._spin_travel >= 2 * math.pi:
                 rospy.loginfo("[Seq] joint1_try1: spin done (1 revolution)")
