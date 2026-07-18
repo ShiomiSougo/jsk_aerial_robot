@@ -105,10 +105,31 @@ void UnderActuatedLQIController::gainGeneratorFunc()
   lqi_nh.param("gain_generate_rate", rate, 15.0);
   ros::Rate loop_rate(rate);
 
+  /* ★ [追加] checkRobotModel() が false を返している連続区間を計測するための
+   *   ローカル状態。谷（特異点近傍）通過中にゲイン更新が何サイクル・何秒
+   *   停止しているかを、falseからtrueへ復帰した瞬間にまとめてWARN出力する。 */
+  bool prev_check_ok = true;
+  ros::Time fail_start_time;
+  int fail_cycle_count = 0;
+
   while(ros::ok())
     {
-      if(checkRobotModel())
+      bool check_ok = checkRobotModel();
+
+      if(check_ok)
         {
+          /* ★ [追加] false -> true への復帰を検知したらまとめて報告 */
+          if(!prev_check_ok)
+            {
+              double halt_duration = (ros::Time::now() - fail_start_time).toSec();
+              ROS_WARN_STREAM_NAMED("LQI gain generator",
+                "LQI gain generator: RESUMED gain update after "
+                << halt_duration << " sec halt ("
+                << fail_cycle_count << " cycles @ " << rate << " Hz, "
+                << "expected ~" << (fail_cycle_count / rate) << " sec)");
+              fail_cycle_count = 0;
+            }
+
           if(optimalGain())
             {
               clampGain();
@@ -119,9 +140,20 @@ void UnderActuatedLQIController::gainGeneratorFunc()
         }
       else
         {
+          /* ★ [追加] true -> false への突入を検知したら開始時刻を記録 */
+          if(prev_check_ok)
+            {
+              fail_start_time = ros::Time::now();
+              fail_cycle_count = 0;
+              ROS_WARN_NAMED("LQI gain generator",
+                "LQI gain generator: gain update HALTED (checkRobotModel failed, stale gains will be used)");
+            }
+          fail_cycle_count++;
+
           resetGain();
         }
 
+      prev_check_ok = check_ok;
       loop_rate.sleep();
     }
 }
