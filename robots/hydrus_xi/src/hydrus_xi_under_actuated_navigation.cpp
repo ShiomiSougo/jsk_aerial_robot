@@ -190,6 +190,8 @@ HydrusXiUnderActuatedNavigator::HydrusXiUnderActuatedNavigator():
     active_fix_idx_(-1),
     active_fix_angle_(0.0),
     last_fc_t_min_(0.0)
+    last_invalid_cnt_(0),      // ★ 追加
+    last_max_jump_(0.0)        // ★ 追加
 {
 }
 
@@ -215,7 +217,10 @@ void HydrusXiUnderActuatedNavigator::initialize(ros::NodeHandle nh, ros::NodeHan
   fix_gimbal_cmd_sub_   = nh_.subscribe("fixed_gimbal_cmd", 1,
                                         &HydrusXiUnderActuatedNavigator::fixedGimbalCmdCallback, this);
   fix_gimbal_state_pub_ = nh_.advertise<std_msgs::Float64MultiArray>("fixed_gimbal_state", 1);
-
+  
+  /* ★ [追加] 診断用トピック */
+  plan_debug_pub_ = nh_.advertise<std_msgs::Float64MultiArray>("plan_debug", 1);
+  
   if(nh.hasParam("control_gimbal_names"))
     {
       nh.getParam("control_gimbal_names", control_gimbal_names_);
@@ -463,15 +468,26 @@ bool HydrusXiUnderActuatedNavigator::plan()
 
   std::vector<double> lb(x.size(), -M_PI), ub(x.size(), M_PI);
 
+  bool prev_stability_ok = true;
+  double delta_angle_used = gimbal_delta_angle_;
+  
+  //追加　リセット発生を検知・記録します：
   if(!first_run)
     {
-      double delta_angle = gimbal_delta_angle_;
-      if(!robot_model_for_plan_->stabilityCheck(false)) delta_angle = M_PI; // reset
+      prev_stability_ok = robot_model_for_plan_->stabilityCheck(false);
+      delta_angle_used = prev_stability_ok ? gimbal_delta_angle_ : M_PI; // reset
+
+      if(!prev_stability_ok)
+        {
+          ROS_WARN_STREAM("[navi][plan_debug] delta_angle RESET to PI: prev-cycle pose is "
+                          "infeasible (fc_t_min=" << robot_model_for_plan_->getFeasibleControlTMin()
+                          << "). Search range widened -> discontinuous jump likely on next solve.");
+        }
 
       for(int i = 0; i < x.size(); i++)
         {
-          lb.at(i) = x.at(i) - delta_angle;
-          ub.at(i) = x.at(i) + delta_angle;
+          lb.at(i) = x.at(i) - delta_angle_used;
+          ub.at(i) = x.at(i) + delta_angle_used;
         }
     }
 
@@ -490,6 +506,25 @@ bool HydrusXiUnderActuatedNavigator::plan()
       /* ★ステップ1: モデルを採用解 x の状態に戻してから τmin を読む。
        *   COBYLA は棄却点で終わることがあり、直後のモデルは最後に評価した
        *   試行点（＝採用解とは限らない）の状態になっているため。 */
+
+      /* ★ [追加] 固定ジンバル以外について、前周期解との最大跳躍量を計算 */
+      last_max_jump_ = 0.0;
+      if(prev_opt_gimbal_angles_.size() == opt_gimbal_angles_.size())
+        {
+          for(int i = 0; i < opt_gimbal_angles_.size(); i++)
+            {
+              if(active_fix_enabled_ && i == active_fix_idx_) continue; // 固定ジンバルはスルー制限別管理
+              double d = fabs(normalizeAngle(opt_gimbal_angles_.at(i) - prev_opt_gimbal_angles_.at(i)));
+              if(d > last_max_jump_) last_max_jump_ = d;
+            }
+          if(last_max_jump_ > gimbal_delta_angle_ * 1.5)
+            {
+              ROS_WARN_STREAM("[navi][plan_debug] LARGE GIMBAL JUMP detected: "
+                              << last_max_jump_ << " rad (delta_angle_used=" << delta_angle_used
+                              << ", invalid_cnt=" << last_invalid_cnt_ << ")");
+            }
+        }
+
       applyGimbalAngles(this, x);
       
       last_fc_t_min_ = robot_model_for_plan_->getFeasibleControlTMin();
@@ -511,6 +546,8 @@ bool HydrusXiUnderActuatedNavigator::plan()
           std::cout << "]" << std::endl;
         }
 
+      /* ★ [追加] リセットする前に、この周期でのstabilityCheck失敗回数を保存 */
+      last_invalid_cnt_ = invalid_cnt;
       cnt = 0;
       invalid_cnt = 0;
     }
@@ -541,6 +578,15 @@ bool HydrusXiUnderActuatedNavigator::plan()
   state_msg.data[4] = active_fix_enabled_
                     ? fabs(normalizeAngle(target - active_fix_angle_)) : M_PI;
   fix_gimbal_state_pub_.publish(state_msg);
+  
+  /* ★ [追加] 診断情報のpublish */
+  std_msgs::Float64MultiArray debug_msg;
+  debug_msg.data.resize(4);
+  debug_msg.data[0] = prev_stability_ok ? 1.0 : 0.0;
+  debug_msg.data[1] = delta_angle_used;
+  debug_msg.data[2] = static_cast<double>(last_invalid_cnt_);
+  debug_msg.data[3] = last_max_jump_;
+  plan_debug_pub_.publish(debug_msg);
 
   prev_opt_gimbal_angles_ = opt_gimbal_angles_;
 

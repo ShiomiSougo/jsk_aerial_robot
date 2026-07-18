@@ -120,7 +120,17 @@ namespace aerial_robot_navigation
      */
     ros::Subscriber fix_gimbal_cmd_sub_;    // ~/fixed_gimbal_cmd   [enable, angle]
     ros::Publisher  fix_gimbal_state_pub_;  // ~/fixed_gimbal_state [en, tgt, cur, fc_t_min, err]
-
+    /* ★ [追加] nlopt探索範囲リセット・解の跳躍を診断するためのpublisher
+     *   /hydrus_xi/plan_debug : Float64MultiArray
+     *   [0] prev_stability_ok (1.0 = 前周期の解でstabilityCheck OK, 0.0 = NG -> delta_angle=PI)
+     *   [1] delta_angle_used  [rad] このplan()周期で実際に使った探索半幅
+     *   [2] invalid_cnt       このplan()周期のnlopt内でstabilityCheckが失敗した回数
+     *   [3] max_gimbal_jump   [rad] gimbal2,3,4のうち前周期解との最大差分(固定ジンバルは除く)
+     */
+    ros::Publisher  plan_debug_pub_;
+    int    last_invalid_cnt_;
+    double last_max_jump_;
+    
     boost::shared_ptr<nlopt::opt> vectoring_nl_solver_full_;     // N   次元
     boost::shared_ptr<nlopt::opt> vectoring_nl_solver_reduced_;  // N-1 次元
 

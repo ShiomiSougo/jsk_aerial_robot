@@ -2,13 +2,30 @@
 # -*- coding: utf-8 -*-
 
 """
-Hydrus-Xi 変形シーケンス（gimbal1 固定・joint1 サーボ駆動版）rev.6
+Hydrus-Xi 変形シーケンス（gimbal1 固定・joint1 サーボ駆動版）rev.7
 
 目的:
   psi_1 (gimbal1 の vectoring 角) を固定したまま joint1 の変形を成立させる。
 
 --------------------------------------------------------------------------
-rev.6 での変更（rev.5 からの差分）— 残課題B（スルー中の特異点通過）対策・案A
+rev.7 での変更（rev.6 からの差分）— plan_debug 診断ログの統合
+--------------------------------------------------------------------------
+[追加M] /hydrus_xi/plan_debug (C++側 navigator の診断トピック) を購読し、
+        スピンテスト中のログに統合。
+
+        C++側 plan() が「前周期の解が stabilityCheck NG -> 探索範囲を
+        gimbal_delta_angle から一気に PI へリセット」する箇所があり、
+        これが谷（特異点近傍）通過時の tau_min 急落・急回復（不連続な
+        ジャンプ）の原因ではないかという仮説を検証するため、以下を追加:
+
+        (M-1) plan_debug の購読・保持 (_plan_debug_cb)。
+        (M-2) スピンループの通常ログに stab_ok/delta/invalid/jump を追記。
+        (M-3) jump が閾値(JUMP_WARN_THRESH)を超えた瞬間は throttle なしで
+              即座に warn 出力し、谷とジャンプの時刻相関を取りこぼさない
+              ようにする。
+
+--------------------------------------------------------------------------
+継続している変更（rev.6 まで）
 --------------------------------------------------------------------------
 [追加K] psi1 スルー中の tau_min ガードと分枝リトライ。
 
@@ -34,19 +51,20 @@ rev.6 での変更（rev.5 からの差分）— 残課題B（スルー中の特
 [変更L] _pick_gimbal_target が両分枝の値を返すようにし、スルー失敗時に
         呼び出し側で切り替えられるようにした。
 
---------------------------------------------------------------------------
-継続している変更（rev.5 まで）
---------------------------------------------------------------------------
 [追加J] 特異点通過の事前準備 PREP（joint1 が危険帯を通るとき joint2,3 を展開）。
 [変更I] 変形順序 joint1 -> joint2,3。
 [変更D/追加E/修正F] psi1 解放と GIMBAL_RELEASE、再送判定 self.fix_active。
 [修正A/追加C] 固定完了判定、sweep モード。
 
 --------------------------------------------------------------------------
-既知の残課題（rev.6 でも未解決）
+既知の残課題（rev.7 でも未解決）
 --------------------------------------------------------------------------
 残課題A: 目標の joint3 が符号反転すると joint2,3 畳み直しで特異点を踏む。
          （例: -0.9 0.3 -0.3）。本 rev では未対策。
+
+残課題B-2: gimbal1 スピン中の tau_min 谷における不連続ジャンプの原因調査中。
+           本 rev では観測のみ（plan_debug ログ統合）。対策（レート制限や
+           段階的探索範囲拡大など）は次 rev 以降で検討。
 
 使用例:
   rosrun hydrus_xi hydrus_xi_gimbal_fixed_sequence.py -0.9 0.3 0.3
@@ -94,6 +112,11 @@ PREP_ANGLE  = 1.2      # [rad] 準備時に joint2,3 を展開する角度
 SLEW_FC_T_MIN_MIN = 1.0   # [Nm] スルー中これを下回ったら「経路が特異点を踏む」と判定し中断
                           #      0 になるまで待たず早めに切り替える。谷の深さに応じて調整。
 SLEW_GUARD_MIN_TRAVEL = 0.15  # [rad] スルー開始直後の過渡を無視するための最小移動量
+# ---------------------------------------------------------------------------
+
+# ---- rev.7 [追加M]: plan_debug ジャンプ即時警告のしきい値 --------------------
+JUMP_WARN_THRESH = 0.3   # [rad] gimbal2,3,4 の前周期解との差分がこれを超えたら
+                          #       throttle なしで即座に warn（谷通過の瞬間を取りこぼさない）
 # ---------------------------------------------------------------------------
 
 GIMBAL_ERR_THRESH = 0.02
@@ -170,6 +193,15 @@ class GimbalFixedSequencer(object):
         self.switch_ctrl = rospy.ServiceProxy(
             '/hydrus_xi/controller_manager/switch_controller', SwitchController)
 
+        # rev.7 [追加M]: plan_debug (C++側 navigator の診断トピック) の購読
+        #   [0] stab_ok  : 前周期の解が stabilityCheck OK だったか(1.0/0.0)
+        #   [1] delta    : このplan()周期で使われた探索範囲の半幅 [rad]
+        #                  (stab_ok=0.0 のときは PI にリセットされているはず)
+        #   [2] invalid  : この周期のnlopt内でstabilityCheckが失敗した回数
+        #   [3] jump     : gimbal2,3,4のうち前周期解との最大差分 [rad]
+        self.plan_debug = {'stab_ok': 1.0, 'delta': 0.0, 'invalid': 0.0, 'jump': 0.0}
+        rospy.Subscriber('/hydrus_xi/plan_debug', Float64MultiArray, self._plan_debug_cb)
+
         rospy.Subscriber('/hydrus_xi/joint_states', JointState, self._joint_state_cb)
         rospy.Subscriber('/hydrus_xi/fixed_gimbal_state', Float64MultiArray, self._fix_state_cb)
 
@@ -226,6 +258,16 @@ class GimbalFixedSequencer(object):
         self.fc_t_min    = msg.data[3]
         self.fix_err     = msg.data[4]
         self.fix_state_received = True
+
+    def _plan_debug_cb(self, msg):
+        """rev.7 [追加M]: C++側 navigator の診断トピックを受信・保持するだけ。
+        警告判定やログ出力はスピンループ側（_step_joint1_try1）で行う。"""
+        if len(msg.data) < 4:
+            return
+        self.plan_debug['stab_ok'] = msg.data[0]
+        self.plan_debug['delta']   = msg.data[1]
+        self.plan_debug['invalid'] = msg.data[2]
+        self.plan_debug['jump']    = msg.data[3]
 
     # ---------------- helpers ----------------
 
@@ -589,10 +631,24 @@ class GimbalFixedSequencer(object):
             self._hold_fix()
             self._send_joint_cmd()   # joint は保持したまま
 
-            # gimbal 角ごとの安定性指標を記録
-            rospy.loginfo_throttle(0.25, "[Seq] spin: gimbal=%+.4f fc_t_min=%.3f travel=%.2f/%.2f",
-                                   self.fix_current, self.fc_t_min,
-                                   self._spin_travel, 2 * math.pi)
+            # rev.7 [追加M-2]: gimbal 角ごとの安定性指標 + plan_debug を記録
+            rospy.loginfo_throttle(
+                0.25,
+                "[Seq] spin: gimbal=%+.4f fc_t_min=%.3f travel=%.2f/%.2f "
+                "| stab_ok=%d delta=%.2f invalid=%d jump=%.3f",
+                self.fix_current, self.fc_t_min, self._spin_travel, 2 * math.pi,
+                int(self.plan_debug['stab_ok']), self.plan_debug['delta'],
+                int(self.plan_debug['invalid']), self.plan_debug['jump'])
+
+            # rev.7 [追加M-3]: ジャンプイベントは throttle せず即座に警告
+            #   谷通過の瞬間（数十msスケール）を確実に捕捉するため。
+            if self.plan_debug['jump'] > JUMP_WARN_THRESH:
+                rospy.logwarn(
+                    "[Seq] spin: JUMP EVENT gimbal=%+.4f fc_t_min=%.3f jump=%.3f "
+                    "invalid=%d stab_ok=%d delta=%.2f",
+                    self.fix_current, self.fc_t_min, self.plan_debug['jump'],
+                    int(self.plan_debug['invalid']), int(self.plan_debug['stab_ok']),
+                    self.plan_debug['delta'])
 
             if self._spin_travel >= 2 * math.pi:
                 rospy.loginfo("[Seq] joint1_try1: spin done (1 revolution)")
