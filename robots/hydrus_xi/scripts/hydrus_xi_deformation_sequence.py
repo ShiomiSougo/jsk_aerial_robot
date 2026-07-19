@@ -663,60 +663,55 @@ class GimbalFixedSequencer(object):
             self._goto(Step.JOINT1_TRY1)
 
     def _step_joint1_try1(self):
-        if not getattr(self, '_spin_done', False):
-            if not hasattr(self, '_spin_cmd'):
-                self._spin_cmd = self.fix_current
-                self._spin_travel = 0.0
-                self.spin_slow_mode = False
-                self._ramp_current_rate = SPIN_RATE_NORMAL
-                rospy.loginfo("[Seq] joint1_try1: start gimbal1 spin from %+.3f (joint1 still held, "
-                              "danger-zone mode='%s')", self._spin_cmd, self.danger_speed_mode)
+        """
+    ★変更: 全周スピンによる診断を廃止。
+    手順は以下の3段階のみ:
+      1) 現在のgimbal1角度から、-1.0 と +1.0 のうち近い方へ移動
+      2) そこから0を通り抜けて、線対称な位置（符号反転した値）へ移動
+      3) 最後に目標角 -0.4 へ移動し、settle後にjoint1のコントローラを停止
+    """
+        TARGET_A = -1.0
+        TARGET_B = 1.0
+        FINAL_TARGET = -0.4
+        REACH_THRESH = 0.05
 
-            # rev.11 [追加Q]: モードに応じた速度決定（ramp: 連続補間 / fast,slow,normal: 二値）
-            current_rate = self._next_spin_rate()
+    # ---- フェーズの初期化（初回のみ） ----
+        if not hasattr(self, '_try1_phase'):
+            # 現在角度に近い方を最初の目標にする
+            da = abs(self._norm(TARGET_A - self.fix_current))
+            db = abs(self._norm(TARGET_B - self.fix_current))
+            first_target = TARGET_A if da <= db else TARGET_B
+            second_target = -first_target  # 0を通り抜けて線対称な位置へ
 
-            self._spin_cmd = self._norm(self._spin_cmd + current_rate)
-            self._spin_travel += current_rate
-            self.gimbal1_cmd = self._spin_cmd
+            self._try1_targets = [first_target, second_target, FINAL_TARGET]
+            self._try1_phase = 0
+
+            rospy.loginfo("[Seq] joint1_try1: gimbal1 route = %+.3f -> %+.3f -> %+.3f "
+                        "(joint1 still held)",
+                        self._try1_targets[0], self._try1_targets[1], self._try1_targets[2])
+
+        # ---- 現在のフェーズの目標角へ向かって移動 ----
+        if self._try1_phase < len(self._try1_targets):
+            target = self._try1_targets[self._try1_phase]
+            self.gimbal1_cmd = target
             self._hold_fix()
-            self._send_joint_cmd()
 
-            rospy.loginfo_throttle(
-                0.25,
-                "[Seq] spin: gimbal=%+.4f fc_t_min=%.3f travel=%.2f/%.2f mode=%s rate=%.4f danger=%d "
-                "| stab_ok=%d delta=%.2f invalid=%d jump=%.3f",
-                self.fix_current, self.fc_t_min, self._spin_travel, 2 * math.pi,
-                self.danger_speed_mode, current_rate, int(self.spin_slow_mode),
-                int(self.plan_debug['stab_ok']), self.plan_debug['delta'],
-                int(self.plan_debug['invalid']), self.plan_debug['jump'])
+            err = abs(self._norm(self.fix_current - target))
+            if err > REACH_THRESH:
+                rospy.loginfo_throttle(0.5, "[Seq] joint1_try1: phase %d/%d, gimbal1 -> %+.3f (now %+.3f) fc_t_min=%.3f",
+                                    self._try1_phase + 1, len(self._try1_targets),
+                                    target, self.fix_current, self.fc_t_min)
+                return
 
-            if self.plan_debug['jump'] > JUMP_WARN_THRESH:
-                rospy.logwarn(
-                    "[Seq] spin: JUMP EVENT gimbal=%+.4f fc_t_min=%.3f jump=%.3f "
-                    "invalid=%d stab_ok=%d delta=%.2f mode=%s rate=%.4f",
-                    self.fix_current, self.fc_t_min, self.plan_debug['jump'],
-                    int(self.plan_debug['invalid']), int(self.plan_debug['stab_ok']),
-                    self.plan_debug['delta'], self.danger_speed_mode, current_rate)
-
-            if self._spin_travel >= 2 * math.pi:
-                rospy.loginfo("[Seq] joint1_try1: spin done (1 revolution, mode='%s')",
-                              self.danger_speed_mode)
-                self._spin_done = True
-            return
-        
-        gimbal_angle = -0.4
-
-        self.gimbal1_cmd = gimbal_angle
-        self._hold_fix()
-
-        if abs(self._norm(self.fix_current - gimbal_angle)) > 0.05:
-            rospy.loginfo_throttle(0.5, "[Seq] joint1_try1: waiting gimbal1 -> %+.3f (now %+.3f)",
-                                   gimbal_angle, self.fix_current)
+            rospy.loginfo("[Seq] joint1_try1: phase %d/%d reached (%+.3f rad)",
+                        self._try1_phase + 1, len(self._try1_targets), self.fix_current)
+            self._try1_phase += 1
             return
 
+        # ---- 最終目標(-0.4)に到達済み。settleしてcontroller1を停止 ----
         if not getattr(self, '_try1_reached_t', None):
             self._try1_reached_t = rospy.Time.now()
-            rospy.loginfo("[Seq] joint1_try1: gimbal1 reached %+.3f, waiting to settle", self.fix_current)
+            rospy.loginfo("[Seq] joint1_try1: gimbal1 reached final %+.3f, waiting to settle", self.fix_current)
 
         settled = all(abs(self.current_dq[j]) < STABILIZE_VEL_THRESH for j in self.joint_names)
         waited = (rospy.Time.now() - self._try1_reached_t).to_sec()
@@ -726,8 +721,8 @@ class GimbalFixedSequencer(object):
 
         if not getattr(self, '_try1_stopped', False):
             self.switch_ctrl(start_controllers=[],
-                             stop_controllers=[JOINT1_CONTROLLER],
-                             strictness=1)
+                            stop_controllers=[JOINT1_CONTROLLER],
+                            strictness=1)
             rospy.loginfo("[Seq] joint1_try1: settled, controller1 stopped")
             self._try1_stopped = True
 
