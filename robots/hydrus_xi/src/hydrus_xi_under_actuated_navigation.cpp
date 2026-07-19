@@ -1,5 +1,6 @@
 #include <hydrus_xi/hydrus_xi_under_actuated_navigation.h>
 #include <std_msgs/Float64MultiArray.h>
+#include <cmath>
 
 using namespace aerial_robot_navigation;
 
@@ -193,25 +194,32 @@ namespace
     return a;
   }
 
-  /* ★ 真の特異点かどうかを診断するための広域グリッドサーチ。
-   *   現在のjoint角・固定gimbal1角を保持したまま、自由変数(gimbal2,3,4)
-   *   のみを [-pi, pi] の範囲でグリッド探索し、達成可能な fc_t_min の
-   *   最大値を返す。
+  /* ★ [rev.16 変更] 真の特異点かどうかを診断するための広域グリッドサーチ。
+   *   現在のjoint角を保持したまま、自由変数（gimbal1固定時はgimbal2,3,4の
+   *   n=3、gimbal1が自由な場合はgimbal1〜4のn=4）を [-pi, pi] の範囲で
+   *   グリッド探索し、達成可能な fc_t_min の最大値を返す。
    *
-   *   rev.12時点での位置づけ: エスカレーションループ（後述）を使い切っても
-   *   検証済みの解が見つからなかった場合の「最終手段」としてのみ呼ばれる。
-   *   通常のリトライでは呼ばれないため、依然として O(grid_steps^n) の
-   *   重い処理のままで問題ない。
+   *   rev.12〜15までは n=3（gimbal1固定モード）専用に実装されており、
+   *   gimbal1が自由な状態（JOINT23_SERVOステップ等、n=4）では診断自体を
+   *   スキップして -1 を返す実装だった。この結果、n=4の状態でエスカレー
+   *   ションが尽きても救済手段が一切なく、joint2,3の変形経路がS1/S2
+   *   特異条件を横切った際にフォースランディングに至る事例が確認された
+   *   （q=(0.5,-1,0.5)実験）。
    *
-   *   x            : 現在のnlopt自由変数（固定ジンバルを除いた角度ベクトル）
-   *   grid_steps   : 各軸の分割数
+   *   rev.16でn=3固定の制約を撤廃し、任意の次元数nに対応できるよう
+   *   一般化した。総評価点数が target_eval_budget 程度になるよう、
+   *   次元数に応じて各軸の分割数（grid_steps）を自動調整する
+   *   （n=3なら従来通り12分割相当、n=4ならおよそ6分割になる）。
+   *
+   *   x                 : 現在のnlopt自由変数（固定ジンバルを除いた角度ベクトル）
+   *   target_eval_budget: 総評価点数の目安（既定1728 = 旧来のn=3,12分割相当）
    *
    *   注意: x, robot_model の状態は関数内で書き換わる。呼び出し側は
    *   戻り値を見た上で、必要なら best_x_out を採用解として使う。
    */
   double diagnoseGlobalMaxFCTMin(HydrusXiUnderActuatedNavigator *planner,
                                   const std::vector<double> &current_x,
-                                  int grid_steps,
+                                  int target_eval_budget,
                                   std::vector<double> &best_x_out)
   {
     auto robot_model = planner->getRobotModelForPlan();
@@ -220,47 +228,60 @@ namespace
     best_x_out = current_x;
     double best_fc_t_min = -1.0;
 
-    if(n != 3)
+    if(n < 1)
       {
-        ROS_WARN_STREAM("diagnoseGlobalMaxFCTMin: expected n=3 (gimbal2,3,4), got n="
-                        << n << ". skip diagnosis.");
+        ROS_WARN_STREAM("diagnoseGlobalMaxFCTMin: invalid dimension n=" << n << ". skip diagnosis.");
         return -1.0;
       }
 
+    /* 次元数nに応じて各軸の分割数を自動調整する。
+     * grid_steps^n ≈ target_eval_budget となるように grid_steps を決める。
+     * 最低3分割は確保する（1〜2分割では探索の意味がほぼ無いため）。 */
+    int grid_steps = std::max(3, static_cast<int>(std::round(
+      std::pow(static_cast<double>(target_eval_budget), 1.0 / static_cast<double>(n)))));
+
     std::vector<double> trial = current_x;
+    std::vector<int> idx(n, 0);
     int evaluated = 0, valid = 0;
 
-    for(int i = 0; i < grid_steps; i++)
+    while(true)
       {
-        trial[0] = -M_PI + 2 * M_PI * i / grid_steps;
-        for(int j = 0; j < grid_steps; j++)
+        for(int d = 0; d < n; d++)
+          trial[d] = -M_PI + 2 * M_PI * idx[d] / grid_steps;
+
+        applyGimbalAngles(planner, trial);
+        evaluated++;
+
+        if(robot_model->stabilityCheck(false))
           {
-            trial[1] = -M_PI + 2 * M_PI * j / grid_steps;
-            for(int k = 0; k < grid_steps; k++)
+            valid++;
+            double fc_t_min = robot_model->getFeasibleControlTMin();
+            if(fc_t_min > best_fc_t_min)
               {
-                trial[2] = -M_PI + 2 * M_PI * k / grid_steps;
-
-                applyGimbalAngles(planner, trial);
-                evaluated++;
-
-                if(!robot_model->stabilityCheck(false)) continue;
-                valid++;
-
-                double fc_t_min = robot_model->getFeasibleControlTMin();
-                if(fc_t_min > best_fc_t_min)
-                  {
-                    best_fc_t_min = fc_t_min;
-                    best_x_out = trial;
-                  }
+                best_fc_t_min = fc_t_min;
+                best_x_out = trial;
               }
           }
+
+        /* n次元の桁上げ（オドメータ式カウンタ）でグリッド全点を走査する */
+        int d = n - 1;
+        while(d >= 0)
+          {
+            idx[d]++;
+            if(idx[d] < grid_steps) break;
+            idx[d] = 0;
+            d--;
+          }
+        if(d < 0) break; // 全軸が一周した = 探索完了
       }
 
-    ROS_WARN_STREAM("[navi][plan_debug] diagnoseGlobalMaxFCTMin: grid " << grid_steps << "^3 = "
-                    << evaluated << " points evaluated, " << valid << " stable. "
+    std::stringstream best_x_ss;
+    for(size_t i = 0; i < best_x_out.size(); i++) best_x_ss << best_x_out[i] << (i + 1 < best_x_out.size() ? ", " : "");
+
+    ROS_WARN_STREAM("[navi][plan_debug] diagnoseGlobalMaxFCTMin: n=" << n << ", grid_steps=" << grid_steps
+                    << " (" << evaluated << " points evaluated, " << valid << " stable). "
                     << "max fc_t_min = " << best_fc_t_min
-                    << " at gimbal(2,3,4) = [" << best_x_out[0] << ", "
-                    << best_x_out[1] << ", " << best_x_out[2] << "]");
+                    << " at gimbal = [" << best_x_ss.str() << "]");
 
     return best_fc_t_min;
   }
@@ -673,9 +694,12 @@ bool HydrusXiUnderActuatedNavigator::plan()
       if(!solve_ok)
         {
           /* ★ 最終手段: リトライを使い切っても検証済みの解が見つからない
-           *   場合のみ、重い広域グリッド探索を1回行い、その最良解を採用する。 */
+           *   場合のみ、重い広域グリッド探索を1回行い、その最良解を採用する。
+           *   [rev.16] target_eval_budget=1728 は旧来のn=3,12分割相当の
+           *   評価点数。n=4（gimbal1自由時）でも同程度のコストになるよう
+           *   diagnoseGlobalMaxFCTMin内部で自動的にgrid_stepsを調整する。 */
           std::vector<double> diag_best_x;
-          double global_max_fc_t_min = diagnoseGlobalMaxFCTMin(this, x0, 12, diag_best_x);
+          double global_max_fc_t_min = diagnoseGlobalMaxFCTMin(this, x0, 1728, diag_best_x);
 
           if(global_max_fc_t_min > gimbal_delta_fc_t_min_ok_)
             {
