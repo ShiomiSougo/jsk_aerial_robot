@@ -85,7 +85,7 @@ rev.14 での変更（rev.11 からの差分）— joint1_try1 を3点移動方�
 --------------------------------------------------------------------------
 rev.11 での変更（rev.10 からの差分）— 危険域スピン速度の連続化（"ramp"モード追加）
 --------------------------------------------------------------------------
-[追加Q] 危険域スピード切替を「二値のヒステリシス」から「fc_t_minに基づく
+[追加Q] 危険域スピード切替を「二値のヒステリス」から「fc_t_minに基づく
         連続補間」に変更した"ramp"モードを追加。
 
         (Q-1) RAMP_FC_HIGH（この値以上なら通常速度）から
@@ -177,7 +177,7 @@ SPIN_RATE_NORMAL = 0.02    # [rad/loop] 基準速度（20Hzで0.4rad/s）
 SPIN_RATE_SLOW    = 0.005  # [rad/loop] slowモード時、危険域で使う速度
 # ★rev.14 [追加T]: 0.05 (=1.0rad/s) -> 0.025 (=0.5rad/s) に変更。
 #   C++側 fix_gimbal_slew_rate_ = 0.5rad/s と揃えた（片方だけ速くても
-#   意味がないため）。rampモードの上限速度としても使われる。
+#   遅い方が律速するだけで意味がないため）。rampモードの上限速度としても使われる。
 SPIN_RATE_FAST    = 0.025  # [rad/loop] fastモード時、危険域で使う速度（rampの上限にも使う）
 
 SPIN_SLOWDOWN_ENTER = 2.0  # [Nm] fast/slow/normalモード用の閾値（ヒステリシス）
@@ -291,6 +291,10 @@ class GimbalFixedSequencer(object):
 
         # rev.15 [追加U]: joint2,3変形用の独立したramp状態
         self._joint23_ramp_current_rate = JOINT23_RATE_NORMAL
+
+        # rev.17 [追加V]: joint2->joint3逐次実行用フェーズ状態
+        self._joint23_phase = 0
+        self._joint23_phase_t0 = rospy.Time.now()
 
         rospy.loginfo("[Seq] danger-zone spin speed mode = '%s' "
                       "(normal=%.4f, slow=%.4f, fast=%.4f rad/loop, "
@@ -417,6 +421,9 @@ class GimbalFixedSequencer(object):
             # rev.15 [追加U]: joint2,3のramp状態を、このステップに入る
             # たびに安全速度から再スタートさせる
             self._joint23_ramp_current_rate = JOINT23_RATE_NORMAL
+            # rev.17 [追加V]: joint2->joint3 の逐次実行用フェーズ状態を初期化
+            self._joint23_phase = 0          # 0: joint2を動かす, 1: joint3を動かす
+            self._joint23_phase_t0 = rospy.Time.now()
 
     def _elapsed(self):
         return (rospy.Time.now() - self.step_t0).to_sec()
@@ -751,32 +758,92 @@ class GimbalFixedSequencer(object):
             self._goto(Step.JOINT23_SERVO)
 
     def _step_joint23_servo(self):
+        """
+        ★rev.17 [追加V]: joint2,3を同時並行ではなく、joint2 -> joint3 の順に
+        逐次動かす方式に変更。
+
+        背景: 従来は_ramp(['joint2','joint3'])で両方を同時に動かしていたが、
+        移動距離の短い方（多くの場合joint3）が先に目標へ到達してそこで
+        待機し、その値がjoint1（固定済み）とほぼ等しいまま、joint2だけが
+        後から-q1を跨いで動くことになっていた。これがまさにS2特異条件
+        （q1≈-q2≈q3）を踏み抜く経路そのものであり、q=(0.5,-1,0.5)・
+        q=(0.785,-1.57,0.785)の両実験で姿勢の乱れ（前者はフォース
+        ランディング直前、後者はrqt_plotで確認できる大きな姿勢乱れ）の
+        直接の原因になっていたことが確認された。
+
+        joint1(既に完了)->joint2->joint3 と完全に逐次実行することで、
+        joint2が動いている間はjoint3が元の値のまま（通常joint1からは
+        離れた値）に保たれ、この特異条件に構造的に嵌りにくくなる。
+        """
         self._release_fix()
 
         rate = self._next_joint23_rate()
-        self._ramp(['joint2', 'joint3'], rate=rate)
-        self._send_joint_cmd()
 
-        rospy.loginfo_throttle(0.5, "[Seq] joint2,3: q=(%.4f, %.4f) tgt=(%.4f, %.4f) psi1=%+.3f "
-                            "fc_t_min=%.3f rate=%.4f | stab_ok=%d invalid=%d jump=%.3f",
-                            self.current_q['joint2'], self.current_q['joint3'],
-                            self.target_q['joint2'], self.target_q['joint3'],
-                            self.fix_current, self.fc_t_min, rate,
-                            int(self.plan_debug['stab_ok']), int(self.plan_debug['invalid']),
-                            self.plan_debug['jump'])
+        if self._joint23_phase == 0:
+            # ---- フェーズ0: joint2のみを動かす。joint3は現状維持 ----
+            self._ramp(['joint2'], rate=rate)
+            self._send_joint_cmd()
 
-        if self.plan_debug['jump'] > JUMP_WARN_THRESH:
-            rospy.logwarn(...)  # 既存のまま
+            rospy.loginfo_throttle(0.5, "[Seq] joint2,3: phase=joint2 q=(%.4f, %.4f) tgt=(%.4f, %.4f) "
+                                   "psi1=%+.3f fc_t_min=%.3f rate=%.4f | stab_ok=%d invalid=%d jump=%.3f",
+                                   self.current_q['joint2'], self.current_q['joint3'],
+                                   self.target_q['joint2'], self.target_q['joint3'],
+                                   self.fix_current, self.fc_t_min, rate,
+                                   int(self.plan_debug['stab_ok']), int(self.plan_debug['invalid']),
+                                   self.plan_debug['jump'])
 
-        if self._reached(['joint2', 'joint3']):
-            rospy.loginfo("[Seq] joint2,3 deform done -> stabilize")
-            self._goto(Step.JOINT23_STABILIZE)
-        elif self._elapsed() >= JOINT23_SERVO_TIMEOUT:
-            rospy.logwarn("[Seq] joint2,3 servo timeout (%.1fs): q=(%.4f,%.4f) tgt=(%.4f,%.4f) "
-                        "fc_t_min=%.3f. proceeding to stabilize anyway.",
-                        JOINT23_SERVO_TIMEOUT, self.current_q['joint2'], self.current_q['joint3'],
-                        self.target_q['joint2'], self.target_q['joint3'], self.fc_t_min)
-            self._goto(Step.JOINT23_STABILIZE)
+            if self.plan_debug['jump'] > JUMP_WARN_THRESH:
+                rospy.logwarn("[Seq] joint2,3: JUMP EVENT during joint2 deform q2=%.4f fc_t_min=%.3f "
+                              "jump=%.3f invalid=%d stab_ok=%d rate=%.4f",
+                              self.current_q['joint2'], self.fc_t_min,
+                              self.plan_debug['jump'], int(self.plan_debug['invalid']),
+                              int(self.plan_debug['stab_ok']), rate)
+
+            phase_elapsed = (rospy.Time.now() - self._joint23_phase_t0).to_sec()
+
+            if abs(self._diff('joint2')) <= ANGLE_ERROR_THRESHOLD:
+                rospy.loginfo("[Seq] joint2 deform done (q2=%.4f) -> joint3", self.current_q['joint2'])
+                self._joint23_phase = 1
+                self._joint23_phase_t0 = rospy.Time.now()
+            elif phase_elapsed >= JOINT23_SERVO_TIMEOUT:
+                rospy.logwarn("[Seq] joint2 servo timeout (%.1fs): q2=%.4f tgt=%.4f fc_t_min=%.3f. "
+                              "proceeding to joint3 anyway.",
+                              JOINT23_SERVO_TIMEOUT, self.current_q['joint2'],
+                              self.target_q['joint2'], self.fc_t_min)
+                self._joint23_phase = 1
+                self._joint23_phase_t0 = rospy.Time.now()
+
+        else:
+            # ---- フェーズ1: joint2は完了済み。joint3のみを動かす ----
+            self._ramp(['joint3'], rate=rate)
+            self._send_joint_cmd()
+
+            rospy.loginfo_throttle(0.5, "[Seq] joint2,3: phase=joint3 q=(%.4f, %.4f) tgt=(%.4f, %.4f) "
+                                   "psi1=%+.3f fc_t_min=%.3f rate=%.4f | stab_ok=%d invalid=%d jump=%.3f",
+                                   self.current_q['joint2'], self.current_q['joint3'],
+                                   self.target_q['joint2'], self.target_q['joint3'],
+                                   self.fix_current, self.fc_t_min, rate,
+                                   int(self.plan_debug['stab_ok']), int(self.plan_debug['invalid']),
+                                   self.plan_debug['jump'])
+
+            if self.plan_debug['jump'] > JUMP_WARN_THRESH:
+                rospy.logwarn("[Seq] joint2,3: JUMP EVENT during joint3 deform q3=%.4f fc_t_min=%.3f "
+                              "jump=%.3f invalid=%d stab_ok=%d rate=%.4f",
+                              self.current_q['joint3'], self.fc_t_min,
+                              self.plan_debug['jump'], int(self.plan_debug['invalid']),
+                              int(self.plan_debug['stab_ok']), rate)
+
+            phase_elapsed = (rospy.Time.now() - self._joint23_phase_t0).to_sec()
+
+            if abs(self._diff('joint3')) <= ANGLE_ERROR_THRESHOLD:
+                rospy.loginfo("[Seq] joint3 deform done (q3=%.4f) -> stabilize", self.current_q['joint3'])
+                self._goto(Step.JOINT23_STABILIZE)
+            elif phase_elapsed >= JOINT23_SERVO_TIMEOUT:
+                rospy.logwarn("[Seq] joint3 servo timeout (%.1fs): q3=%.4f tgt=%.4f fc_t_min=%.3f. "
+                              "proceeding to stabilize anyway.",
+                              JOINT23_SERVO_TIMEOUT, self.current_q['joint3'],
+                              self.target_q['joint3'], self.fc_t_min)
+                self._goto(Step.JOINT23_STABILIZE)
 
     def _step_joint23_stabilize(self):
         self._send_joint_cmd()
@@ -942,6 +1009,8 @@ class GimbalFixedSequencer(object):
                      '_try1_reached_t', '_try1_stopped'):
             if hasattr(self, attr):
                 delattr(self, attr)
+        # ★rev.17: joint23逐次実行のフェーズ状態も明示的にリセット
+        self._joint23_phase = 0
         self._goto(Step.INIT)
         rospy.loginfo("[Seq] new target: (%.3f, %.3f, %.3f)", q1, q2, q3)
 
