@@ -233,7 +233,7 @@ class GimbalFixedSequencer(object):
         #                  (stab_ok=0.0 のときは PI にリセットされているはず)
         #   [2] invalid  : この周期のnlopt内でstabilityCheckが失敗した回数
         #   [3] jump     : gimbal2,3,4のうち前周期解との最大差分 [rad]
-        self.plan_debug = {'stab_ok': 1.0, 'delta': 0.0, 'invalid': 0.0, 'jump': 0.0}
+        self.plan_debug = {'stab_ok': 1.0, 'delta': 0.0, 'invalid': 0.0, 'jump': 0.0, 'gimbals': []}
         rospy.Subscriber('/hydrus_xi/plan_debug', Float64MultiArray, self._plan_debug_cb)
 
         rospy.Subscriber('/hydrus_xi/joint_states', JointState, self._joint_state_cb)
@@ -302,6 +302,7 @@ class GimbalFixedSequencer(object):
         self.plan_debug['delta']   = msg.data[1]
         self.plan_debug['invalid'] = msg.data[2]
         self.plan_debug['jump']    = msg.data[3]
+        self.plan_debug['gimbals'] = list(msg.data[4:]) if len(msg.data) > 4 else []
 
     # ---------------- helpers ----------------
 

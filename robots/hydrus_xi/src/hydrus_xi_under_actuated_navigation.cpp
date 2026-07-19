@@ -21,6 +21,11 @@ using namespace aerial_robot_navigation;
  *    - stabilityCheck の無効化 / 閾値のハードコード上書き
  *  これらは本改造では不要。psi_1 を固定した時点で内部モーメントは
  *  静止推力 lambda_1 のスカラー倍として一意に決まるため。
+ *
+ *  【診断用の追加（デバッグ専用、恒久対策ではない）】
+ *  - plan_debug トピック: πリセット・ジンバル角ジャンプの検知
+ *  - diagnoseGlobalMaxFCTMin(): リセット発生時のみ、gimbal2,3,4を
+ *    広域グリッド探索し、「探索範囲不足」か「真の特異点」かを判定する
  * ========================================================================== */
 
 namespace
@@ -172,6 +177,76 @@ namespace
     while(a < -M_PI) a += 2 * M_PI;
     return a;
   }
+
+  /* ★ [追加] 真の特異点かどうかを診断するための広域グリッドサーチ。
+   *   現在のjoint角・固定gimbal1角を保持したまま、自由変数(gimbal2,3,4)
+   *   のみを [-pi, pi] の範囲でグリッド探索し、達成可能な fc_t_min の
+   *   最大値を返す。探索範囲(±gimbal_delta_angle_)の狭さが原因なのか、
+   *   真に fc_t_min≈0 しか存在しない配置なのかを切り分けるための、
+   *   リセット発生時のみ呼ぶ重い（O(grid_steps^n)）デバッグ用関数。
+   *
+   *   x            : 現在のnlopt自由変数（固定ジンバルを除いた角度ベクトル）
+   *   grid_steps   : 各軸の分割数
+   *
+   *   注意: x, robot_model の状態は関数内で書き換わるが、呼び出し側は
+   *   この直後に solver->optimize(x, ...) を呼んで x を上書きするため、
+   *   副作用は問題にならない。
+   */
+  double diagnoseGlobalMaxFCTMin(HydrusXiUnderActuatedNavigator *planner,
+                                  const std::vector<double> &current_x,
+                                  int grid_steps,
+                                  std::vector<double> &best_x_out)
+  {
+    auto robot_model = planner->getRobotModelForPlan();
+    const int n = static_cast<int>(current_x.size());
+
+    best_x_out = current_x;
+    double best_fc_t_min = -1.0;
+
+    if(n != 3)
+      {
+        ROS_WARN_STREAM("diagnoseGlobalMaxFCTMin: expected n=3 (gimbal2,3,4), got n="
+                        << n << ". skip diagnosis.");
+        return -1.0;
+      }
+
+    std::vector<double> trial = current_x;
+    int evaluated = 0, valid = 0;
+
+    for(int i = 0; i < grid_steps; i++)
+      {
+        trial[0] = -M_PI + 2 * M_PI * i / grid_steps;
+        for(int j = 0; j < grid_steps; j++)
+          {
+            trial[1] = -M_PI + 2 * M_PI * j / grid_steps;
+            for(int k = 0; k < grid_steps; k++)
+              {
+                trial[2] = -M_PI + 2 * M_PI * k / grid_steps;
+
+                applyGimbalAngles(planner, trial);
+                evaluated++;
+
+                if(!robot_model->stabilityCheck(false)) continue;
+                valid++;
+
+                double fc_t_min = robot_model->getFeasibleControlTMin();
+                if(fc_t_min > best_fc_t_min)
+                  {
+                    best_fc_t_min = fc_t_min;
+                    best_x_out = trial;
+                  }
+              }
+          }
+      }
+
+    ROS_WARN_STREAM("[navi][plan_debug] diagnoseGlobalMaxFCTMin: grid " << grid_steps << "^3 = "
+                    << evaluated << " points evaluated, " << valid << " stable. "
+                    << "max fc_t_min = " << best_fc_t_min
+                    << " at gimbal(2,3,4) = [" << best_x_out[0] << ", "
+                    << best_x_out[1] << ", " << best_x_out[2] << "]");
+
+    return best_fc_t_min;
+  }
 };
 
 HydrusXiUnderActuatedNavigator::HydrusXiUnderActuatedNavigator():
@@ -217,10 +292,10 @@ void HydrusXiUnderActuatedNavigator::initialize(ros::NodeHandle nh, ros::NodeHan
   fix_gimbal_cmd_sub_   = nh_.subscribe("fixed_gimbal_cmd", 1,
                                         &HydrusXiUnderActuatedNavigator::fixedGimbalCmdCallback, this);
   fix_gimbal_state_pub_ = nh_.advertise<std_msgs::Float64MultiArray>("fixed_gimbal_state", 1);
-  
+
   /* ★ [追加] 診断用トピック */
   plan_debug_pub_ = nh_.advertise<std_msgs::Float64MultiArray>("plan_debug", 1);
-  
+
   if(nh.hasParam("control_gimbal_names"))
     {
       nh.getParam("control_gimbal_names", control_gimbal_names_);
@@ -470,7 +545,7 @@ bool HydrusXiUnderActuatedNavigator::plan()
 
   bool prev_stability_ok = true;
   double delta_angle_used = gimbal_delta_angle_;
-  
+
   //追加　リセット発生を検知・記録します：
   if(!first_run)
     {
@@ -482,6 +557,31 @@ bool HydrusXiUnderActuatedNavigator::plan()
           ROS_WARN_STREAM("[navi][plan_debug] delta_angle RESET to PI: prev-cycle pose is "
                           "infeasible (fc_t_min=" << robot_model_for_plan_->getFeasibleControlTMin()
                           << "). Search range widened -> discontinuous jump likely on next solve.");
+
+          /* ★ [追加] 真の特異点かどうかを1回だけ広域診断する。
+           *   x は現在のnlopt自由変数（gimbal2,3,4）の値。
+           *   重い処理(grid_steps^3回のstabilityCheck)なので、リセット
+           *   発生時のみに限定して呼ぶ。診断結果はログ出力のみで、
+           *   x自体やこの後の最適化には一切影響を与えない。 */
+          std::vector<double> diag_best_x;
+          double global_max_fc_t_min = diagnoseGlobalMaxFCTMin(this, x, 12, diag_best_x);
+
+          if(global_max_fc_t_min < 0.01)
+            {
+              ROS_ERROR_STREAM("[navi][plan_debug] TRUE SINGULARITY suspected: even global grid "
+                               "search found max fc_t_min = " << global_max_fc_t_min
+                               << " (this joint/gimbal1 configuration makes fc_t_min ~0 "
+                               << "regardless of gimbal2,3,4 choice)");
+            }
+          else if(global_max_fc_t_min > 0.0)
+            {
+              ROS_WARN_STREAM("[navi][plan_debug] NOT a true singularity: global search found "
+                              "fc_t_min = " << global_max_fc_t_min << " reachable, but local search "
+                              "(delta=" << gimbal_delta_angle_ << ") could not find it -> "
+                              "search range may be the real bottleneck.");
+            }
+          /* global_max_fc_t_min < 0 の場合は診断自体がスキップされた
+           * (n != 3 など) ので、追加のログは出さない。 */
         }
 
       for(int i = 0; i < x.size(); i++)
@@ -526,7 +626,7 @@ bool HydrusXiUnderActuatedNavigator::plan()
         }
 
       applyGimbalAngles(this, x);
-      
+
       last_fc_t_min_ = robot_model_for_plan_->getFeasibleControlTMin();
 
       if(plan_verbose_)
@@ -579,13 +679,16 @@ bool HydrusXiUnderActuatedNavigator::plan()
                     ? fabs(normalizeAngle(target - active_fix_angle_)) : M_PI;
   fix_gimbal_state_pub_.publish(state_msg);
 
-  /* ★ [追加] 診断情報のpublish */
+  /* ★ [追加] 診断情報のpublish。[4]以降に実際のgimbal角(opt_gimbal_angles_)を付加し、
+   *   リセット直後にどの配置へジャンプしたかをPython側ログと突き合わせられるようにする。 */
   std_msgs::Float64MultiArray debug_msg;
-  debug_msg.data.resize(4);
+  debug_msg.data.resize(4 + opt_gimbal_angles_.size());
   debug_msg.data[0] = prev_stability_ok ? 1.0 : 0.0;
   debug_msg.data[1] = delta_angle_used;
   debug_msg.data[2] = static_cast<double>(last_invalid_cnt_);
   debug_msg.data[3] = last_max_jump_;
+  for(size_t i = 0; i < opt_gimbal_angles_.size(); i++)
+    debug_msg.data[4 + i] = opt_gimbal_angles_.at(i);
   plan_debug_pub_.publish(debug_msg);
 
   prev_opt_gimbal_angles_ = opt_gimbal_angles_;
