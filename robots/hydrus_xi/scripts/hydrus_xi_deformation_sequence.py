@@ -185,8 +185,8 @@ SPIN_SLOWDOWN_EXIT  = 3.0
 # ---------------------------------------------------------------------------
 
 # ---- rev.11 [追加Q]: "ramp"モード（連続補間）用パラメータ -------------------
-RAMP_FC_HIGH = 4.25    # [Nm] この値以上のfc_t_minでは通常速度(SPIN_RATE_NORMAL)
-RAMP_FC_LOW  = 0.75    # [Nm] この値以下のfc_t_minでは最大速度(SPIN_RATE_FAST)
+RAMP_FC_HIGH = 4.0    # [Nm] この値以上のfc_t_minでは通常速度(SPIN_RATE_NORMAL)
+RAMP_FC_LOW  = 1.0    # [Nm] この値以下のfc_t_minでは最大速度(SPIN_RATE_FAST)
                        #      HIGHとLOWの間は線形補間する。
 RAMP_RATE_SLEW = 0.003  # [rad/loop] 1ループあたりの速度自体の最大変化量。
                          #      fc_t_minが谷の底で細かく振動しても、

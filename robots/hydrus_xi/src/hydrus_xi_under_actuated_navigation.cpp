@@ -838,7 +838,7 @@ void HydrusXiUnderActuatedNavigator::rosParamInit()
   getParam<double>(navi_nh, "gimbal_delta_angle", gimbal_delta_angle_, 0.2);
 
   /* ★ [rev.12 追加] 探索範囲エスカレーション用パラメータ */
-  getParam<double>(navi_nh, "gimbal_delta_escalation_factor", gimbal_delta_escalation_factor_, 3.0);
+  getParam<double>(navi_nh, "gimbal_delta_escalation_factor", gimbal_delta_escalation_factor_, 2.0);
   getParam<int>(navi_nh, "gimbal_delta_max_retries", gimbal_delta_max_retries_, 5);
   getParam<double>(navi_nh, "gimbal_delta_fc_t_min_ok", gimbal_delta_fc_t_min_ok_, 0.05);
   getParam<double>(navi_nh, "gimbal_delta_max_time", gimbal_delta_max_time_, 0.03); // [s] 20Hz(50ms)周期に対する安全弁
