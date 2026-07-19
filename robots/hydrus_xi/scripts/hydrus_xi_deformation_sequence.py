@@ -2,10 +2,51 @@
 # -*- coding: utf-8 -*-
 
 """
-Hydrus-Xi 変形シーケンス（gimbal1 固定・joint1 サーボ駆動版）rev.11
+Hydrus-Xi 変形シーケンス（gimbal1 固定・joint1 サーボ駆動版）rev.14
 
 目的:
   psi_1 (gimbal1 の vectoring 角) を固定したまま joint1 の変形を成立させる。
+
+--------------------------------------------------------------------------
+rev.14 での変更（rev.11 からの差分）— joint1_try1 を3点移動方式に変更
+--------------------------------------------------------------------------
+[追加R] 全周スピンによる特異点診断（旧 _step_joint1_try1）を廃止し、
+        「安全域（±1.0rad付近）だけを通る3点移動」に置き換えた。
+
+        背景: 全周スピン方式は、πおよびその近傍（既知の深い特異点帯）
+        を毎回横断する設計だった。到達判定が self._spin_travel という
+        「コマンドの積算カウンタ」に基づいていたため、fix_gimbal_slew_rate_
+        （C++側の物理スルーレート）を引き上げた際に、これまで実際には
+        到達していなかった未探索領域（+2.2〜+2.7rad付近）へ初めて到達し、
+        過去最長となる1.867秒のLQIゲイン停止を引き起こすことが実験で
+        判明した（詳細は研究ノート参照）。
+
+        一方、今回の実験用途では「joint1の変形に必要な推力を得られれば
+        よく、gimbal1を[-π/2, +π/2]の範囲内で動かせれば十分」という
+        要件が明確になったため、πを跨がない3点移動方式に変更した:
+          1) 現在角度に近い方の ±1.0 へ移動
+          2) 0を通り抜けて符号反転した位置へ移動
+          3) 最終角 -0.4 へ移動 → settle後にjoint1のコントローラを停止
+        到達判定は self.fix_current（実測角度）ベースであり、旧方式の
+        「コマンド積算カウンタと実角度のズレ」は構造的に発生しない。
+
+[追加S] 上記3点移動の各区間の移動速度に、rev.11で導入した ramp ロジック
+        （_next_spin_rate / _ramp_target_rate、fc_t_minに応じた連続速度
+        補間）をそのまま適用した。到達判定が実測角度ベースになったこと
+        で、rampによる速度変化が「見かけ上の到達判定のズレ」を生む心配
+        がなくなり、安全にrampを組み込めるようになった。
+
+[追加T] SPIN_RATE_FAST を 0.05 -> 0.025 rad/loop に変更（20Hzで
+        1.0rad/s -> 0.5rad/s 相当）。C++側の fix_gimbal_slew_rate_ を
+        0.5rad/sに設定したことに合わせ、Python側の最大コマンド速度も
+        同じ上限に揃えた（どちらか一方だけ速くしても、遅い方が律速する
+        だけで意味がないため）。
+
+        既定の速度モードは fast/normal/slow ではなく "ramp" に変更した。
+        fast/normal/slow は比較実験用にコードとしては残しているが、
+        joint1_try1 の3点移動方式は常に _next_spin_rate() を通すため、
+        --speed=ramp 以外を指定した場合は二値ヒステリシス方式で動く
+        （rev.10までの挙動と同じ）。
 
 --------------------------------------------------------------------------
 rev.11 での変更（rev.10 からの差分）— 危険域スピン速度の連続化（"ramp"モード追加）
@@ -13,33 +54,13 @@ rev.11 での変更（rev.10 からの差分）— 危険域スピン速度の�
 [追加Q] 危険域スピード切替を「二値のヒステリシス」から「fc_t_minに基づく
         連続補間」に変更した"ramp"モードを追加。
 
-        背景: rev.10のfast/slow/normal比較実験で、fastモードは
-        joint1=0.3（最も厳しい条件）でLQIゲイン停止時間を大幅に
-        短縮できることが確認された（normal: 4.065秒/61周期の末に
-        フォースランディング、fast: 0.067秒/1周期で回復）。
-
-        一方、実験中の目視観察で「速度がnormal<->fastへ切り替わる
-        瞬間に機体が揺れる」ことが確認された。これはDANGER ZONE
-        entered/exitedという二値の閾値判定による、速度の不連続な
-        ジャンプ（0.02->0.05 rad/loopへの瞬間切替）が原因と考えられる。
-
-        対策として、閾値判定そのものをやめ、fc_t_minの現在値から
-        連続的に速度を補間する方式にする:
-
         (Q-1) RAMP_FC_HIGH（この値以上なら通常速度）から
               RAMP_FC_LOW（この値以下なら最大加速）まで、
               fc_t_minに対して線形補間で速度を決める。
-              閾値をまたぐ瞬間という概念自体が存在しなくなる。
-
-        (Q-2) それでもfc_t_min自体が谷の底で細かく振動する場合に
-              備え、速度の変化量自体にもスルーレート制限
-              （RAMP_RATE_SLEW）をかけ、二重に滑らかにする。
-
-        (Q-3) RAMP_FC_HIGHはrev.10のSPIN_SLOWDOWN_ENTER(2.0)より
-              大きい値（既定4.0）にして、より早い段階から緩やかに
-              加速を始める（ユーザー提案：「より大きなtau_minの
-              ときから回転速度を徐々に上げる」）。
-
+        (Q-2) 速度の変化量自体にもスルーレート制限（RAMP_RATE_SLEW）を
+              かけ、二重に滑らかにする。
+        (Q-3) frac_linear を平方根カーブにし、fc_t_minがまだHIGHに近い
+              段階から早めにFAST側へ立ち上げる。
         (Q-4) --speed=ramp で選択可能。fast/normal/slowは比較実験用
               にそのまま残す。
 
@@ -48,10 +69,8 @@ rev.11 での変更（rev.10 からの差分）— 危険域スピン速度の�
 --------------------------------------------------------------------------
 [追加P] 危険域でのgimbal1スピン速度をfast/normal/slowの3モードから
         コマンドライン引数 --speed= で選べるようにした（比較実験用）。
-
 [追加O] plan_debug に実際のgimbal角(opt_gimbal_angles_)が付加。
-[追加N] fc_t_min に応じてgimbal1スピン速度を落とす（ヒステリシス付き、
-        rev.11でramp以外のモードの実装として維持）。
+[追加N] fc_t_min に応じてgimbal1スピン速度を落とす（ヒステリシス付き）。
 [追加M] /hydrus_xi/plan_debug の購読・ログ統合。
 [追加K] psi1 スルー中の tau_min ガードと分枝リトライ。
 [追加J] 特異点通過の事前準備 PREP。
@@ -60,18 +79,18 @@ rev.11 での変更（rev.10 からの差分）— 危険域スピン速度の�
 [修正A/追加C] 固定完了判定、sweep モード。
 
 --------------------------------------------------------------------------
-既知の残課題（rev.11 でも未解決）
+既知の残課題（rev.14 時点）
 --------------------------------------------------------------------------
 残課題A: joint3符号反転時のjoint2,3畳み直しでの特異点（未対策）。
-残課題B-3: 谷での凍結時間ばらつきの根本原因（探索範囲逐次拡大、対策②）は
-           未実装。rampモードは対症療法であり、②と併用が望ましい。
-残課題C: rampモードでの飛行品質（上下動の有無）はまだ目視確認していない。
-          次rev以降で実機/Gazebo上の揺れの大きさを比較する必要がある。
+残課題D: sweepモードは現状動作しない（原因未調査、当面使用しない）。
+残課題E: 3点移動方式が[-π/2, +π/2]の範囲内で全joint1角度に対して
+         十分な安全マージンを保っているか、より広いjoint1角度レンジで
+         の継続検証が必要。
 
 使用例:
-  rosrun hydrus_xi hydrus_xi_deformation_sequence.py 0.3 1 1 --speed=ramp
+  rosrun hydrus_xi hydrus_xi_deformation_sequence.py 1.45 1 1
+  rosrun hydrus_xi hydrus_xi_deformation_sequence.py 1.45 1 1 --speed=ramp
   rosrun hydrus_xi hydrus_xi_deformation_sequence.py 0.3 1 1 --speed=fast
-  rosrun hydrus_xi hydrus_xi_deformation_sequence.py --sweep
 """
 
 import rospy
@@ -122,7 +141,10 @@ JUMP_WARN_THRESH = 0.3
 # ---- rev.10 [追加P]: fast/normal/slow の危険域固定速度（比較実験用） --------
 SPIN_RATE_NORMAL = 0.02    # [rad/loop] 基準速度（20Hzで0.4rad/s）
 SPIN_RATE_SLOW    = 0.005  # [rad/loop] slowモード時、危険域で使う速度
-SPIN_RATE_FAST    = 0.05   # [rad/loop] fastモード時、危険域で使う速度（rampの上限にも使う）
+# ★rev.14 [追加T]: 0.05 (=1.0rad/s) -> 0.025 (=0.5rad/s) に変更。
+#   C++側 fix_gimbal_slew_rate_ = 0.5rad/s と揃えた（片方だけ速くても
+#   意味がないため）。rampモードの上限速度としても使われる。
+SPIN_RATE_FAST    = 0.025  # [rad/loop] fastモード時、危険域で使う速度（rampの上限にも使う）
 
 SPIN_SLOWDOWN_ENTER = 2.0  # [Nm] fast/slow/normalモード用の閾値（ヒステリシス）
 SPIN_SLOWDOWN_EXIT  = 3.0
@@ -136,7 +158,8 @@ RAMP_RATE_SLEW = 0.003  # [rad/loop] 1ループあたりの速度自体の最大
                          #      fc_t_minが谷の底で細かく振動しても、
                          #      rate自体は滑らかにしか動かないようにする。
 
-DEFAULT_DANGER_SPEED_MODE = "normal"  # "normal"/"slow"/"fast"/"ramp"
+# ★rev.14 [追加T]: 既定を "ramp" に変更（3点移動方式が前提のため）
+DEFAULT_DANGER_SPEED_MODE = "ramp"  # "normal"/"slow"/"fast"/"ramp"
 # ---------------------------------------------------------------------------
 
 GIMBAL_ERR_THRESH = 0.02
@@ -164,6 +187,12 @@ LOOP_FREQ = 20.0
 DT = 1.0 / LOOP_FREQ
 
 JOINT1_CONTROLLER = "/hydrus_xi/servo_controller/joints/controller1/simulation"
+
+# ---- rev.14 [追加R]: 3点移動方式のルート定義（joint1_try1で使用） -----------
+TRY1_TARGET_A = -1.0
+TRY1_TARGET_B = 1.0
+TRY1_FINAL_TARGET = -0.4
+TRY1_REACH_THRESH = 0.05
 # ---------------------------------------------------------------------------
 
 
@@ -411,8 +440,8 @@ class GimbalFixedSequencer(object):
         """fc_t_minからramp目標速度を計算する（連続関数、閾値なし）。
         frac_linearを平方根カーブにすることで、fc_t_minがまだHIGHに近い
         （＝まだ十分安全な）段階からtarget_rateを早めに立ち上げ、
-    谷本体に入る前にFAST側への「助走」を終わらせやすくする。
-    """
+        谷本体に入る前にFAST側への「助走」を終わらせやすくする。
+        """
         if fc_t_min >= RAMP_FC_HIGH:
             return SPIN_RATE_NORMAL
         if fc_t_min <= RAMP_FC_LOW:
@@ -421,9 +450,12 @@ class GimbalFixedSequencer(object):
         frac_linear = max(0.0, min(1.0, frac_linear))
         frac = frac_linear ** 0.5   # 平方根で早期に立ち上がる凹カーブ
         return SPIN_RATE_NORMAL + frac * (SPIN_RATE_FAST - SPIN_RATE_NORMAL)
-    
+
     def _next_spin_rate(self):
-        """このループで使うgimbal1スピン速度を、現在のdanger_speed_modeに応じて決める。"""
+        """このループで使うgimbal1移動速度を、現在のdanger_speed_modeに応じて決める。
+        rev.14時点では joint1_try1 の3点移動の各区間でのみ使用される
+        （旧・全周スピンロジックは廃止済み）。
+        """
         if self.danger_speed_mode == "ramp":
             # rev.11: fc_t_minに基づく連続補間 + 速度自体へのスルーレート制限
             target_rate = self._ramp_target_rate(self.fc_t_min)
@@ -664,47 +696,70 @@ class GimbalFixedSequencer(object):
 
     def _step_joint1_try1(self):
         """
-    ★変更: 全周スピンによる診断を廃止。
-    手順は以下の3段階のみ:
-      1) 現在のgimbal1角度から、-1.0 と +1.0 のうち近い方へ移動
-      2) そこから0を通り抜けて、線対称な位置（符号反転した値）へ移動
-      3) 最後に目標角 -0.4 へ移動し、settle後にjoint1のコントローラを停止
-    """
-        TARGET_A = -1.0
-        TARGET_B = 1.0
-        FINAL_TARGET = -0.4
-        REACH_THRESH = 0.05
+        ★rev.14: 全周スピンによる診断を廃止し、3点経由の安全ルートを採用。
+        各区間の移動は ramp ロジック（fc_t_minに応じた連続速度補間、
+        rev.11由来）で制御し、真の谷に近づいたときだけ自動的に減速する。
+        到達判定は実測角度(self.fix_current)ベースなので、旧スピン方式で
+        問題になった「コマンド積算カウンタと実角度のズレ」は構造的に発生
+        しない。
 
-    # ---- フェーズの初期化（初回のみ） ----
+        ルート: 現在角度に近い方の ±1.0 -> 符号反転した位置 -> 最終角(-0.4)
+        最大速度は SPIN_RATE_FAST（既定0.5rad/s相当）でキャップされる。
+        """
         if not hasattr(self, '_try1_phase'):
-            # 現在角度に近い方を最初の目標にする
-            da = abs(self._norm(TARGET_A - self.fix_current))
-            db = abs(self._norm(TARGET_B - self.fix_current))
-            first_target = TARGET_A if da <= db else TARGET_B
+            da = abs(self._norm(TRY1_TARGET_A - self.fix_current))
+            db = abs(self._norm(TRY1_TARGET_B - self.fix_current))
+            first_target = TRY1_TARGET_A if da <= db else TRY1_TARGET_B
             second_target = -first_target  # 0を通り抜けて線対称な位置へ
 
-            self._try1_targets = [first_target, second_target, FINAL_TARGET]
+            self._try1_targets = [first_target, second_target, TRY1_FINAL_TARGET]
             self._try1_phase = 0
+            self._try1_cmd = self.fix_current  # コマンドの起点は現在の実角度
+            self.spin_slow_mode = False
+            self._ramp_current_rate = SPIN_RATE_NORMAL
 
             rospy.loginfo("[Seq] joint1_try1: gimbal1 route = %+.3f -> %+.3f -> %+.3f "
-                        "(joint1 still held)",
-                        self._try1_targets[0], self._try1_targets[1], self._try1_targets[2])
+                          "(joint1 still held, mode='%s', max=%.4f rad/loop)",
+                          self._try1_targets[0], self._try1_targets[1], self._try1_targets[2],
+                          self.danger_speed_mode, SPIN_RATE_FAST)
 
-        # ---- 現在のフェーズの目標角へ向かって移動 ----
         if self._try1_phase < len(self._try1_targets):
             target = self._try1_targets[self._try1_phase]
-            self.gimbal1_cmd = target
+
+            current_rate = self._next_spin_rate()  # fc_t_minに応じた速度（ramp/fast/normal/slow）
+
+            err = self._norm(target - self._try1_cmd)
+            if abs(err) <= current_rate:
+                self._try1_cmd = target
+            else:
+                self._try1_cmd = self._norm(self._try1_cmd + math.copysign(current_rate, err))
+
+            self.gimbal1_cmd = self._try1_cmd
             self._hold_fix()
 
-            err = abs(self._norm(self.fix_current - target))
-            if err > REACH_THRESH:
-                rospy.loginfo_throttle(0.5, "[Seq] joint1_try1: phase %d/%d, gimbal1 -> %+.3f (now %+.3f) fc_t_min=%.3f",
-                                    self._try1_phase + 1, len(self._try1_targets),
-                                    target, self.fix_current, self.fc_t_min)
+            rospy.loginfo_throttle(
+                0.25,
+                "[Seq] joint1_try1: phase %d/%d cmd=%+.3f actual=%+.3f tgt=%+.3f "
+                "fc_t_min=%.3f rate=%.4f | stab_ok=%d delta=%.2f invalid=%d jump=%.3f",
+                self._try1_phase + 1, len(self._try1_targets),
+                self._try1_cmd, self.fix_current, target, self.fc_t_min, current_rate,
+                int(self.plan_debug['stab_ok']), self.plan_debug['delta'],
+                int(self.plan_debug['invalid']), self.plan_debug['jump'])
+
+            if self.plan_debug['jump'] > JUMP_WARN_THRESH:
+                rospy.logwarn(
+                    "[Seq] joint1_try1: JUMP EVENT phase=%d cmd=%+.3f actual=%+.3f fc_t_min=%.3f "
+                    "jump=%.3f invalid=%d stab_ok=%d delta=%.2f rate=%.4f",
+                    self._try1_phase + 1, self._try1_cmd, self.fix_current, self.fc_t_min,
+                    self.plan_debug['jump'], int(self.plan_debug['invalid']),
+                    int(self.plan_debug['stab_ok']), self.plan_debug['delta'], current_rate)
+
+            # ★到達判定は実測角度ベース（旧スピン方式のtravelカウンタは使わない）
+            if abs(self._norm(self.fix_current - target)) > TRY1_REACH_THRESH:
                 return
 
             rospy.loginfo("[Seq] joint1_try1: phase %d/%d reached (%+.3f rad)",
-                        self._try1_phase + 1, len(self._try1_targets), self.fix_current)
+                          self._try1_phase + 1, len(self._try1_targets), self.fix_current)
             self._try1_phase += 1
             return
 
@@ -721,8 +776,8 @@ class GimbalFixedSequencer(object):
 
         if not getattr(self, '_try1_stopped', False):
             self.switch_ctrl(start_controllers=[],
-                            stop_controllers=[JOINT1_CONTROLLER],
-                            strictness=1)
+                             stop_controllers=[JOINT1_CONTROLLER],
+                             strictness=1)
             rospy.loginfo("[Seq] joint1_try1: settled, controller1 stopped")
             self._try1_stopped = True
 
@@ -790,6 +845,11 @@ class GimbalFixedSequencer(object):
         self.prep_used = False
         self.branch_tried = []
         self.branch_current = None
+        # ★rev.14: joint1_try1 の3点移動用フェーズ状態もリセットする
+        for attr in ('_try1_phase', '_try1_targets', '_try1_cmd',
+                     '_try1_reached_t', '_try1_stopped'):
+            if hasattr(self, attr):
+                delattr(self, attr)
         self._goto(Step.INIT)
         rospy.loginfo("[Seq] new target: (%.3f, %.3f, %.3f)", q1, q2, q3)
 
