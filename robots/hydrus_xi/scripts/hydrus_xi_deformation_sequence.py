@@ -2,10 +2,44 @@
 # -*- coding: utf-8 -*-
 
 """
-Hydrus-Xi 変形シーケンス（gimbal1 固定・joint1 サーボ駆動版）rev.14
+Hydrus-Xi 変形シーケンス（gimbal1 固定・joint1 サーボ駆動版）rev.15
 
 目的:
   psi_1 (gimbal1 の vectoring 角) を固定したまま joint1 の変形を成立させる。
+
+--------------------------------------------------------------------------
+rev.15 での変更（rev.14 からの差分）— joint2,3変形中の特異点通過ガード追加
+--------------------------------------------------------------------------
+[追加U] 深刻なバグ修正：_step_joint23_servo に、S1/S2特異条件を横切る
+        際の安全ガードが一切存在しなかった。
+
+        発見の経緯: q=(0.5, -1, 0.5) への変形実験でフォースランディングが
+        発生した。ログを解析した結果、joint1(=0.527, 固定済み)・
+        joint3(=0.499, 目標に先着して停止)がほぼ等しい値のまま、
+        joint2 だけが 1.57 -> -1.0 へ単純な直線補間（_ramp）で動かされ、
+        その途中で joint2 ≈ -0.5 を通過した瞬間に S2特異条件
+        （q1 = -q2 = q3）を踏み抜き、fc_t_min が 0 に落ちて姿勢崩壊、
+        フォースランディングに至った。
+
+        根本原因は二重にあった：
+          (1) _step_joint23_servo は _ramp() で joint2,3 を固定レート
+              (JOINT_RAMP_RATE) で単純に直線補間するだけで、経路上で
+              特異条件に近づいていないかを一切確認していなかった。
+          (2) _check_fc_t_min() は fix_active（gimbal1固定モード中）
+              のときしか働かず、gimbal1解放後（JOINT23_SERVOはまさに
+              この状態）では常に無条件でパスするだけの無防備な設計
+              だった。
+
+        対策として、gimbal1のrampロジック（rev.11で確立した「危険域は
+        素早く通過すべき」という原則）と同じ考え方を joint2,3 の変形
+        速度にも適用した。fc_t_min が低下するほど joint2,3 の変化速度
+        を自動的に引き上げ（JOINT23_RATE_NORMAL -> JOINT23_RATE_FAST の
+        連続補間）、危険域の滞在時間を短縮する。gimbal1側のrampとは
+        独立した状態変数（_joint23_ramp_current_rate）を持つ。
+
+        なお、これは対症療法であり、経路そのものが特異点を横切らない
+        よう事前に計画する（Zhao et al., 2016のRRT*に相当する経路計画）
+        という根本対策は依然として今後の課題として残る。
 
 --------------------------------------------------------------------------
 rev.14 での変更（rev.11 からの差分）— joint1_try1 を3点移動方式に変更
@@ -195,6 +229,18 @@ TRY1_FINAL_TARGET = -0.4
 TRY1_REACH_THRESH = 0.05
 # ---------------------------------------------------------------------------
 
+# ---- rev.15 [追加U]: joint2,3変形中の特異点通過ガード（gimbal1のrampと同じ原則） ----
+#   q=(0.5,-1,0.5)実験でのフォースランディングを受けて追加。
+#   固定レート(JOINT_RAMP_RATE)のまま特異条件（S1/S2）近傍を通過すると
+#   危険域に長く留まることになるため、gimbal1のrampロジックと同じ
+#   「fc_t_minが低いほど速く通り抜ける」原則を joint2,3 にも適用する。
+JOINT23_RATE_NORMAL   = JOINT_RAMP_RATE        # 危険域外での既定速度（従来と同じ）
+JOINT23_RATE_FAST     = JOINT_RAMP_RATE * 2.5  # 危険域での最大速度（gimbal1のfast倍率2.5を踏襲）
+JOINT23_RAMP_FC_HIGH  = RAMP_FC_HIGH           # この値以上のfc_t_minでは通常速度
+JOINT23_RAMP_FC_LOW   = RAMP_FC_LOW            # この値以下のfc_t_minでは最大速度
+JOINT23_RAMP_RATE_SLEW = JOINT_RAMP_RATE * 0.2 # 1ループあたりの速度自体の最大変化量
+# ---------------------------------------------------------------------------
+
 
 class GimbalFixedSequencer(object):
 
@@ -242,6 +288,9 @@ class GimbalFixedSequencer(object):
 
         # rev.11 [追加Q]: rampモード用の現在速度（スルーレート制限の起点）
         self._ramp_current_rate = SPIN_RATE_NORMAL
+
+        # rev.15 [追加U]: joint2,3変形用の独立したramp状態
+        self._joint23_ramp_current_rate = JOINT23_RATE_NORMAL
 
         rospy.loginfo("[Seq] danger-zone spin speed mode = '%s' "
                       "(normal=%.4f, slow=%.4f, fast=%.4f rad/loop, "
@@ -364,6 +413,10 @@ class GimbalFixedSequencer(object):
         self.hold_count = 0
         self.release_hold = 0
         self.psi1_prev = None
+        if step == Step.JOINT23_SERVO:
+            # rev.15 [追加U]: joint2,3のramp状態を、このステップに入る
+            # たびに安全速度から再スタートさせる
+            self._joint23_ramp_current_rate = JOINT23_RATE_NORMAL
 
     def _elapsed(self):
         return (rospy.Time.now() - self.step_t0).to_sec()
@@ -380,11 +433,11 @@ class GimbalFixedSequencer(object):
             return True
         return self.hold_count >= STABILIZE_HOLD_LOOPS
 
-    def _ramp(self, joints):
+    def _ramp(self, joints, rate=JOINT_RAMP_RATE):
         for j in joints:
             d = self._norm(self.target_q[j] - self.joint_targets[j])
-            if abs(d) > JOINT_RAMP_RATE:
-                self.joint_targets[j] += math.copysign(JOINT_RAMP_RATE, d)
+            if abs(d) > rate:
+                self.joint_targets[j] += math.copysign(rate, d)
             else:
                 self.joint_targets[j] = self.target_q[j]
 
@@ -485,6 +538,32 @@ class GimbalFixedSequencer(object):
             return SPIN_RATE_FAST
         else:  # "normal"
             return SPIN_RATE_NORMAL
+
+    # rev.15 [追加U]: joint2,3変形用のramp速度計算（gimbal1の_ramp_target_rateと同じ考え方）
+    def _joint23_ramp_target_rate(self, fc_t_min):
+        """fc_t_minからjoint2,3の目標変化速度を計算する（連続関数、閾値なし）。
+        gimbal1の_ramp_target_rateと同じ平方根カーブを使い、危険域に近づく
+        ほど早期に速度を引き上げる。
+        """
+        if fc_t_min >= JOINT23_RAMP_FC_HIGH:
+            return JOINT23_RATE_NORMAL
+        if fc_t_min <= JOINT23_RAMP_FC_LOW:
+            return JOINT23_RATE_FAST
+        frac_linear = (JOINT23_RAMP_FC_HIGH - fc_t_min) / (JOINT23_RAMP_FC_HIGH - JOINT23_RAMP_FC_LOW)
+        frac_linear = max(0.0, min(1.0, frac_linear))
+        frac = frac_linear ** 0.5
+        return JOINT23_RATE_NORMAL + frac * (JOINT23_RATE_FAST - JOINT23_RATE_NORMAL)
+
+    def _next_joint23_rate(self):
+        """このループで使うjoint2,3の変化速度を、fc_t_minに応じて連続的に決める。
+        gimbal1のrampとは独立した状態（_joint23_ramp_current_rate）を持つ。
+        """
+        target_rate = self._joint23_ramp_target_rate(self.fc_t_min)
+        step = target_rate - self._joint23_ramp_current_rate
+        if abs(step) > JOINT23_RAMP_RATE_SLEW:
+            step = math.copysign(JOINT23_RAMP_RATE_SLEW, step)
+        self._joint23_ramp_current_rate += step
+        return self._joint23_ramp_current_rate
 
     # ---------------- steps ----------------
 
@@ -672,15 +751,34 @@ class GimbalFixedSequencer(object):
             self._goto(Step.JOINT23_SERVO)
 
     def _step_joint23_servo(self):
+        """
+        ★rev.15 [追加U]: joint2,3の変形速度に、gimbal1と同じrampロジックを
+        適用する。旧実装は固定レート(JOINT_RAMP_RATE)で単純に直線補間する
+        だけで、経路上でS1/S2特異条件（q1≈-q2≈q3等）に近づいても検知
+        できず、フォースランディングに至った事例が確認された
+        （q=(0.5,-1,0.5)実験）。fc_t_minが下がるほど自動的に変化速度を
+        引き上げ、危険域の滞在時間を短縮する。
+        """
         self._release_fix()
 
-        self._ramp(['joint2', 'joint3'])
+        rate = self._next_joint23_rate()
+        self._ramp(['joint2', 'joint3'], rate=rate)
         self._send_joint_cmd()
 
-        rospy.loginfo_throttle(0.5, "[Seq] joint2,3: q=(%.4f, %.4f) tgt=(%.4f, %.4f) psi1=%+.3f fc_t_min=%.3f",
+        rospy.loginfo_throttle(0.5, "[Seq] joint2,3: q=(%.4f, %.4f) tgt=(%.4f, %.4f) psi1=%+.3f "
+                               "fc_t_min=%.3f rate=%.4f | stab_ok=%d invalid=%d jump=%.3f",
                                self.current_q['joint2'], self.current_q['joint3'],
                                self.target_q['joint2'], self.target_q['joint3'],
-                               self.fix_current, self.fc_t_min)
+                               self.fix_current, self.fc_t_min, rate,
+                               int(self.plan_debug['stab_ok']), int(self.plan_debug['invalid']),
+                               self.plan_debug['jump'])
+
+        if self.plan_debug['jump'] > JUMP_WARN_THRESH:
+            rospy.logwarn("[Seq] joint2,3: JUMP EVENT during deform q=(%.4f, %.4f) fc_t_min=%.3f "
+                          "jump=%.3f invalid=%d stab_ok=%d rate=%.4f",
+                          self.current_q['joint2'], self.current_q['joint3'], self.fc_t_min,
+                          self.plan_debug['jump'], int(self.plan_debug['invalid']),
+                          int(self.plan_debug['stab_ok']), rate)
 
         if self._reached(['joint2', 'joint3']):
             rospy.loginfo("[Seq] joint2,3 deform done -> stabilize")
