@@ -408,14 +408,20 @@ class GimbalFixedSequencer(object):
 
     # rev.11 [追加Q]: rampモード用の連続速度補間
     def _ramp_target_rate(self, fc_t_min):
-        """fc_t_minからramp目標速度を計算する（連続関数、閾値なし）。"""
+        """fc_t_minからramp目標速度を計算する（連続関数、閾値なし）。
+        frac_linearを平方根カーブにすることで、fc_t_minがまだHIGHに近い
+        （＝まだ十分安全な）段階からtarget_rateを早めに立ち上げ、
+    谷本体に入る前にFAST側への「助走」を終わらせやすくする。
+    """
         if fc_t_min >= RAMP_FC_HIGH:
             return SPIN_RATE_NORMAL
         if fc_t_min <= RAMP_FC_LOW:
             return SPIN_RATE_FAST
-        frac = (RAMP_FC_HIGH - fc_t_min) / (RAMP_FC_HIGH - RAMP_FC_LOW)  # 0(HIGH)->1(LOW)
+        frac_linear = (RAMP_FC_HIGH - fc_t_min) / (RAMP_FC_HIGH - RAMP_FC_LOW)  # 0(HIGH)->1(LOW)
+        frac_linear = max(0.0, min(1.0, frac_linear))
+        frac = frac_linear ** 0.5   # 平方根で早期に立ち上がる凹カーブ
         return SPIN_RATE_NORMAL + frac * (SPIN_RATE_FAST - SPIN_RATE_NORMAL)
-
+    
     def _next_spin_rate(self):
         """このループで使うgimbal1スピン速度を、現在のdanger_speed_modeに応じて決める。"""
         if self.danger_speed_mode == "ramp":
