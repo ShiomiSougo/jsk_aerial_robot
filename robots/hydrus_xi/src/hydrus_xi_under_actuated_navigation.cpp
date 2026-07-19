@@ -449,8 +449,12 @@ bool HydrusXiUnderActuatedNavigator::plan()
 {
   joint_positions_for_plan_ = robot_model_->getJointPositions(); // real
 
-  if(joint_positions_for_plan_.rows() == 0) return false;
-
+  if(joint_positions_for_plan_.rows() == 0)
+    {
+      ROS_ERROR_THROTTLE(0.5, "[navi][plan_debug] plan() EARLY RETURN: joint_positions_for_plan_ is empty");
+      return false;
+    }
+    //追記：「plan()が早期returnしている」という仮説を検証
   // initialize from the normal shape
   bool singular_form = true;
   if(control_gimbal_indices_.size() == 0)
