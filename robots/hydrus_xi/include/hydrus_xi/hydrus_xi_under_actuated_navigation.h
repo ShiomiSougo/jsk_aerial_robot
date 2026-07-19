@@ -104,6 +104,18 @@ namespace aerial_robot_navigation
     double fc_t_min_thresh_; // constraint func
     double gimbal_delta_angle_; // configuration state
 
+    /* ================= ★ [rev.12 追加] 探索範囲エスカレーション関連 =================
+     *
+     * plan() の1周期内で「delta=gimbal_delta_angle_ -> 不安定なら
+     * ×escalation_factor に広げて再試行」を繰り返すためのパラメータ。
+     * 旧仕様（周期をまたぐ 0.2 or π の二値リセット）を置き換える。
+     */
+    double gimbal_delta_escalation_factor_; // リトライ毎にdeltaへ掛ける倍率（既定2.0）
+    int    gimbal_delta_max_retries_;       // 1周期内の最大リトライ回数（既定5）
+    double gimbal_delta_fc_t_min_ok_;       // 「検証済みの解」とみなすfc_t_minの下限（既定0.05）
+    double gimbal_delta_max_time_;          // 1周期内でエスカレーションに使える時間予算[s]（既定0.03）
+    /* ================================================================================= */
+
     std::vector<double> opt_gimbal_angles_, prev_opt_gimbal_angles_;
 
     void threadFunc();
@@ -122,9 +134,11 @@ namespace aerial_robot_navigation
     ros::Publisher  fix_gimbal_state_pub_;  // ~/fixed_gimbal_state [en, tgt, cur, fc_t_min, err]
     /* ★ [追加] nlopt探索範囲リセット・解の跳躍を診断するためのpublisher
      *   /hydrus_xi/plan_debug : Float64MultiArray
-     *   [0] prev_stability_ok (1.0 = 前周期の解でstabilityCheck OK, 0.0 = NG -> delta_angle=PI)
-     *   [1] delta_angle_used  [rad] このplan()周期で実際に使った探索半幅
-     *   [2] invalid_cnt       このplan()周期のnlopt内でstabilityCheckが失敗した回数
+     *   [0] solve_ok          (1.0 = このplan()周期でエスカレーション込みで
+     *                          検証済みの解が見つかった, 0.0 = 見つからず
+     *                          最終手段(広域探索 or 最後の試行)を採用)
+     *   [1] delta_angle_used  [rad] このplan()周期で最終的に使った探索半幅
+     *   [2] retry_count       このplan()周期で要したエスカレーションのリトライ回数
      *   [3] max_gimbal_jump   [rad] gimbal2,3,4のうち前周期解との最大差分(固定ジンバルは除く)
      */
     ros::Publisher  plan_debug_pub_;

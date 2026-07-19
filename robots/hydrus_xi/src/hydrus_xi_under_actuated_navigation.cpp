@@ -26,6 +26,21 @@ using namespace aerial_robot_navigation;
  *  - plan_debug トピック: πリセット・ジンバル角ジャンプの検知
  *  - diagnoseGlobalMaxFCTMin(): リセット発生時のみ、gimbal2,3,4を
  *    広域グリッド探索し、「探索範囲不足」か「真の特異点」かを判定する
+ *
+ *  【★rev.12 追加】探索範囲の逐次拡大（エスカレーション）
+ *  - 旧ロジックは「前周期の解が不安定 -> 次周期は delta=π で全開放」という
+ *    "周期をまたぐ" 二値リセットだった。谷の中では毎周期 π で別々の局所解に
+ *    飛びつき、検証されていないその解がそのまま publish され続けるという
+ *    問題（LARGE GIMBAL JUMP の連鎖）が実験で確認された。
+ *  - 新ロジックは plan() の 1 周期内で完結するリトライループにする：
+ *      1) delta = gimbal_delta_angle_ (既定0.2rad) で出発点 x0 から最適化
+ *      2) 得られた解が不安定 or fc_t_min が小さすぎれば、x を x0 に戻し、
+ *         delta を escalation_factor 倍に広げて再度最適化
+ *      3) 安定解が見つかるか、最大リトライ回数 or 時間予算に達するまで
+ *         繰り返す
+ *      4) それでも見つからない場合のみ、最終手段として広域グリッド探索
+ *         (diagnoseGlobalMaxFCTMin) の結果を採用する
+ *    実機へ publish されるのは、このループ内で検証済みの解のみ。
  * ========================================================================== */
 
 namespace
@@ -178,19 +193,21 @@ namespace
     return a;
   }
 
-  /* ★ [追加] 真の特異点かどうかを診断するための広域グリッドサーチ。
+  /* ★ 真の特異点かどうかを診断するための広域グリッドサーチ。
    *   現在のjoint角・固定gimbal1角を保持したまま、自由変数(gimbal2,3,4)
    *   のみを [-pi, pi] の範囲でグリッド探索し、達成可能な fc_t_min の
-   *   最大値を返す。探索範囲(±gimbal_delta_angle_)の狭さが原因なのか、
-   *   真に fc_t_min≈0 しか存在しない配置なのかを切り分けるための、
-   *   リセット発生時のみ呼ぶ重い（O(grid_steps^n)）デバッグ用関数。
+   *   最大値を返す。
+   *
+   *   rev.12時点での位置づけ: エスカレーションループ（後述）を使い切っても
+   *   検証済みの解が見つからなかった場合の「最終手段」としてのみ呼ばれる。
+   *   通常のリトライでは呼ばれないため、依然として O(grid_steps^n) の
+   *   重い処理のままで問題ない。
    *
    *   x            : 現在のnlopt自由変数（固定ジンバルを除いた角度ベクトル）
    *   grid_steps   : 各軸の分割数
    *
-   *   注意: x, robot_model の状態は関数内で書き換わるが、呼び出し側は
-   *   この直後に solver->optimize(x, ...) を呼んで x を上書きするため、
-   *   副作用は問題にならない。
+   *   注意: x, robot_model の状態は関数内で書き換わる。呼び出し側は
+   *   戻り値を見た上で、必要なら best_x_out を採用解として使う。
    */
   double diagnoseGlobalMaxFCTMin(HydrusXiUnderActuatedNavigator *planner,
                                   const std::vector<double> &current_x,
@@ -265,8 +282,8 @@ HydrusXiUnderActuatedNavigator::HydrusXiUnderActuatedNavigator():
     active_fix_idx_(-1),
     active_fix_angle_(0.0),
     last_fc_t_min_(0.0),
-    last_invalid_cnt_(0),      // ★ 追加
-    last_max_jump_(0.0)        // ★ 追加
+    last_invalid_cnt_(0),
+    last_max_jump_(0.0)
 {
 }
 
@@ -537,7 +554,7 @@ bool HydrusXiUnderActuatedNavigator::plan()
   boost::shared_ptr<nlopt::opt> solver =
     active_fix_enabled_ ? vectoring_nl_solver_reduced_ : vectoring_nl_solver_full_;
 
-  /* ---- 自由変数の抽出と探索範囲 ------------------------------------------ */
+  /* ---- 自由変数の抽出 ------------------------------------------------------ */
   std::vector<double> x;                       // 最適化にかける自由変数
   for(int i = 0; i < n; i++)
     {
@@ -545,73 +562,152 @@ bool HydrusXiUnderActuatedNavigator::plan()
       x.push_back(opt_gimbal_angles_.at(i));
     }
 
-  std::vector<double> lb(x.size(), -M_PI), ub(x.size(), M_PI);
+  /* ============================================================================
+   * ★ [rev.12 変更] 探索範囲の逐次拡大（エスカレーション）
+   *
+   *   旧ロジック（削除済み）:
+   *     前周期の解が不安定 -> 次周期は delta=π で全開放、という
+   *     "周期をまたぐ" 二値リセット。谷の中では毎周期 π で別々の局所解に
+   *     飛びつき、検証されていない解がそのまま publish され続けていた。
+   *
+   *   新ロジック:
+   *     plan() の1周期内で完結するリトライループ。
+   *       1) delta = gimbal_delta_angle_ で出発点 x0 から最適化
+   *       2) 不安定 or fc_t_min が小さすぎれば x を x0 に戻し、
+   *          delta を gimbal_delta_escalation_factor_ 倍に広げて再試行
+   *       3) 検証済みの安定解が見つかるか、最大リトライ回数
+   *          (gimbal_delta_max_retries_) あるいは時間予算
+   *          (gimbal_delta_max_time_) に達するまで繰り返す
+   *       4) それでも見つからない場合のみ、最終手段として
+   *          diagnoseGlobalMaxFCTMin() の結果を採用する
+   * ========================================================================== */
 
-  bool prev_stability_ok = true;
+  const std::vector<double> x0 = x; // この周期の出発点。各リトライで必ずここへ戻る
+  const double loop_start_time = ros::Time::now().toSec();
+
   double delta_angle_used = gimbal_delta_angle_;
+  bool   solve_ok = false;
+  int    retry_count = 0;
+  double achieved_fc_t_min = 0.0;
+  double max_f = 0;
 
-  //追加　リセット発生を検知・記録します：
-  if(!first_run)
+  std::vector<double> lb(x0.size()), ub(x0.size());
+
+  if(first_run)
     {
-      prev_stability_ok = robot_model_for_plan_->stabilityCheck(false);
-      delta_angle_used = prev_stability_ok ? gimbal_delta_angle_ : M_PI; // reset
-
-      if(!prev_stability_ok)
+      /* 初回はヒューリスティック初期値の近傍のみを1回だけ最適化する
+       * （従来どおり）。エスカレーションは2周期目以降に限定する。 */
+      for(size_t i = 0; i < x0.size(); i++)
         {
-          ROS_WARN_STREAM("[navi][plan_debug] delta_angle RESET to PI: prev-cycle pose is "
-                          "infeasible (fc_t_min=" << robot_model_for_plan_->getFeasibleControlTMin()
-                          << "). Search range widened -> discontinuous jump likely on next solve.");
+          lb.at(i) = -M_PI;
+          ub.at(i) =  M_PI;
+        }
+      solver->set_lower_bounds(lb);
+      solver->set_upper_bounds(ub);
 
-          /* ★ [追加] 真の特異点かどうかを1回だけ広域診断する。
-           *   x は現在のnlopt自由変数（gimbal2,3,4）の値。
-           *   重い処理(grid_steps^3回のstabilityCheck)なので、リセット
-           *   発生時のみに限定して呼ぶ。診断結果はログ出力のみで、
-           *   x自体やこの後の最適化には一切影響を与えない。 */
+      try { solver->optimize(x, max_f); }
+      catch(std::exception &e) { ROS_WARN_STREAM("[navi][plan_debug] nlopt failed on first_run: " << e.what()); }
+
+      applyGimbalAngles(this, x);
+      solve_ok = robot_model_for_plan_->stabilityCheck(false);
+      achieved_fc_t_min = robot_model_for_plan_->getFeasibleControlTMin();
+      retry_count = 0;
+    }
+  else
+    {
+      for(retry_count = 0; retry_count <= gimbal_delta_max_retries_; retry_count++)
+        {
+          for(size_t i = 0; i < x0.size(); i++)
+            {
+              lb.at(i) = x0.at(i) - delta_angle_used;
+              ub.at(i) = x0.at(i) + delta_angle_used;
+            }
+          solver->set_lower_bounds(lb);
+          solver->set_upper_bounds(ub);
+
+          x = x0; // ★ 毎リトライ、出発点から再スタート（前リトライの悪い解を引きずらない）
+
+          try
+            {
+              solver->optimize(x, max_f);
+            }
+          catch(std::exception &e)
+            {
+              ROS_WARN_STREAM("[navi][plan_debug] nlopt failed at retry " << retry_count
+                              << " (delta=" << delta_angle_used << "): " << e.what());
+            }
+
+          /* モデルを採用解 x の状態に戻してから判定する（COBYLA は棄却点で
+           * 終わることがあるため） */
+          applyGimbalAngles(this, x);
+          bool stable = robot_model_for_plan_->stabilityCheck(false);
+          achieved_fc_t_min = robot_model_for_plan_->getFeasibleControlTMin();
+
+          if(stable && achieved_fc_t_min > gimbal_delta_fc_t_min_ok_)
+            {
+              solve_ok = true;
+              break;
+            }
+
+          bool time_budget_exceeded =
+            (ros::Time::now().toSec() - loop_start_time) > gimbal_delta_max_time_;
+
+          if(retry_count < gimbal_delta_max_retries_ && !time_budget_exceeded)
+            {
+              double next_delta = std::min(delta_angle_used * gimbal_delta_escalation_factor_, M_PI);
+              ROS_WARN_STREAM("[navi][plan_debug] escalation retry " << retry_count
+                              << ": delta=" << delta_angle_used << " -> " << next_delta
+                              << " (stable=" << stable << ", fc_t_min=" << achieved_fc_t_min << ")");
+              delta_angle_used = next_delta;
+            }
+          else
+            {
+              if(time_budget_exceeded)
+                ROS_WARN_STREAM("[navi][plan_debug] escalation time budget ("
+                                << gimbal_delta_max_time_ << "s) exceeded at retry "
+                                << retry_count << ", stopping early.");
+              break;
+            }
+        }
+
+      if(!solve_ok)
+        {
+          /* ★ 最終手段: リトライを使い切っても検証済みの解が見つからない
+           *   場合のみ、重い広域グリッド探索を1回行い、その最良解を採用する。 */
           std::vector<double> diag_best_x;
-          double global_max_fc_t_min = diagnoseGlobalMaxFCTMin(this, x, 12, diag_best_x);
+          double global_max_fc_t_min = diagnoseGlobalMaxFCTMin(this, x0, 12, diag_best_x);
 
-          if(global_max_fc_t_min < 0.01)
+          if(global_max_fc_t_min > gimbal_delta_fc_t_min_ok_)
+            {
+              ROS_ERROR_STREAM("[navi][plan_debug] escalation exhausted (" << retry_count
+                               << " retries, final delta=" << delta_angle_used << "). "
+                               << "falling back to global-search solution, fc_t_min="
+                               << global_max_fc_t_min);
+              x = diag_best_x;
+              applyGimbalAngles(this, x);
+              achieved_fc_t_min = global_max_fc_t_min;
+            }
+          else
             {
               ROS_ERROR_STREAM("[navi][plan_debug] TRUE SINGULARITY suspected: even global grid "
                                "search found max fc_t_min = " << global_max_fc_t_min
                                << " (this joint/gimbal1 configuration makes fc_t_min ~0 "
-                               << "regardless of gimbal2,3,4 choice)");
+                               << "regardless of gimbal2,3,4 choice). using last escalation "
+                               << "attempt (delta=" << delta_angle_used << ") as-is.");
+              /* diag_best_x は使わず、最後のエスカレーション試行の x をそのまま使う。
+               * （真の特異点近傍では広域探索の結果も信頼性が低いため。） */
             }
-          else if(global_max_fc_t_min > 0.0)
-            {
-              ROS_WARN_STREAM("[navi][plan_debug] NOT a true singularity: global search found "
-                              "fc_t_min = " << global_max_fc_t_min << " reachable, but local search "
-                              "(delta=" << gimbal_delta_angle_ << ") could not find it -> "
-                              "search range may be the real bottleneck.");
-            }
-          /* global_max_fc_t_min < 0 の場合は診断自体がスキップされた
-           * (n != 3 など) ので、追加のログは出さない。 */
-        }
-
-      for(int i = 0; i < x.size(); i++)
-        {
-          lb.at(i) = x.at(i) - delta_angle_used;
-          ub.at(i) = x.at(i) + delta_angle_used;
         }
     }
 
-  solver->set_lower_bounds(lb);
-  solver->set_upper_bounds(ub);
-
-  /* ---- 最適化 ------------------------------------------------------------ */
-  double start_time = ros::Time::now().toSec();
-  double max_f = 0;
+  /* ---- 以降の後処理（jump検出・publish用の値の確定） ---------------------- */
+  double start_time = loop_start_time;
   try
     {
-      solver->optimize(x, max_f);
-
       /* 自由変数を全体ベクトルへ書き戻す */
       opt_gimbal_angles_ = composeGimbalAngles(x);
-      /* ★ステップ1: モデルを採用解 x の状態に戻してから τmin を読む。
-       *   COBYLA は棄却点で終わることがあり、直後のモデルは最後に評価した
-       *   試行点（＝採用解とは限らない）の状態になっているため。 */
 
-      /* ★ [追加] 固定ジンバル以外について、前周期解との最大跳躍量を計算 */
+      /* ★ 固定ジンバル以外について、前周期解との最大跳躍量を計算 */
       last_max_jump_ = 0.0;
       if(prev_opt_gimbal_angles_.size() == opt_gimbal_angles_.size())
         {
@@ -625,7 +721,7 @@ bool HydrusXiUnderActuatedNavigator::plan()
             {
               ROS_WARN_STREAM("[navi][plan_debug] LARGE GIMBAL JUMP detected: "
                               << last_max_jump_ << " rad (delta_angle_used=" << delta_angle_used
-                              << ", invalid_cnt=" << last_invalid_cnt_ << ")");
+                              << ", retry_count=" << retry_count << ", solve_ok=" << solve_ok << ")");
             }
         }
 
@@ -645,12 +741,13 @@ bool HydrusXiUnderActuatedNavigator::plan()
           for(auto it: opt_gimbal_angles_) std::cout << std::setprecision(5) << it << " ";
           std::cout << ", max min yaw: " << max_min_yaw_;
           std::cout << ", fc t min: " << last_fc_t_min_;
+          std::cout << ", retries: " << retry_count << ", solve_ok: " << solve_ok;
           std::cout << ", attitude: [" << roll << ", " << pitch;
           std::cout << "], force: [" << robot_model_for_plan_->getStaticThrust().transpose();
           std::cout << "]" << std::endl;
         }
 
-      /* ★ [追加] リセットする前に、この周期でのstabilityCheck失敗回数を保存 */
+      /* ★ この周期でのnlopt内部stabilityCheck失敗回数を保存 */
       last_invalid_cnt_ = invalid_cnt;
       cnt = 0;
       invalid_cnt = 0;
@@ -683,13 +780,21 @@ bool HydrusXiUnderActuatedNavigator::plan()
                     ? fabs(normalizeAngle(target - active_fix_angle_)) : M_PI;
   fix_gimbal_state_pub_.publish(state_msg);
 
-  /* ★ [追加] 診断情報のpublish。[4]以降に実際のgimbal角(opt_gimbal_angles_)を付加し、
-   *   リセット直後にどの配置へジャンプしたかをPython側ログと突き合わせられるようにする。 */
+  /* ★ [rev.12 変更] 診断情報のpublish。
+   *   [0] : solve_ok        （この周期でエスカレーション込みで検証済みの解が見つかったか）
+   *   [1] : delta_angle_used（最終的に使われた探索半幅）
+   *   [2] : retry_count     （このplan()周期で要したリトライ回数。旧仕様の
+   *                           invalid_cnt から意味が変わっているため、
+   *                           Python側ログの文言更新を推奨）
+   *   [3] : last_max_jump_
+   *   [4]以降: opt_gimbal_angles_（実際のgimbal角）
+   *   メッセージのフィールド数・順序は変更していないため、Python側の
+   *   購読コード（_plan_debug_cb）は無変更で動作する。 */
   std_msgs::Float64MultiArray debug_msg;
   debug_msg.data.resize(4 + opt_gimbal_angles_.size());
-  debug_msg.data[0] = prev_stability_ok ? 1.0 : 0.0;
+  debug_msg.data[0] = solve_ok ? 1.0 : 0.0;
   debug_msg.data[1] = delta_angle_used;
-  debug_msg.data[2] = static_cast<double>(last_invalid_cnt_);
+  debug_msg.data[2] = static_cast<double>(retry_count);
   debug_msg.data[3] = last_max_jump_;
   for(size_t i = 0; i < opt_gimbal_angles_.size(); i++)
     debug_msg.data[4 + i] = opt_gimbal_angles_.at(i);
@@ -707,6 +812,13 @@ void HydrusXiUnderActuatedNavigator::rosParamInit()
   getParam<bool>(navi_nh, "plan_verbose", plan_verbose_, false);
   getParam<bool>(navi_nh, "maximize_yaw", maximize_yaw_, false);
   getParam<double>(navi_nh, "gimbal_delta_angle", gimbal_delta_angle_, 0.2);
+
+  /* ★ [rev.12 追加] 探索範囲エスカレーション用パラメータ */
+  getParam<double>(navi_nh, "gimbal_delta_escalation_factor", gimbal_delta_escalation_factor_, 2.0);
+  getParam<int>(navi_nh, "gimbal_delta_max_retries", gimbal_delta_max_retries_, 5);
+  getParam<double>(navi_nh, "gimbal_delta_fc_t_min_ok", gimbal_delta_fc_t_min_ok_, 0.05);
+  getParam<double>(navi_nh, "gimbal_delta_max_time", gimbal_delta_max_time_, 0.03); // [s] 20Hz(50ms)周期に対する安全弁
+
   getParam<double>(navi_nh, "force_norm_rate", force_norm_weight_, 2.0);
   getParam<double>(navi_nh, "force_variant_rate", force_variant_weight_, 0.01);
   getParam<double>(navi_nh, "yaw_torque_weight", yaw_torque_weight_, 1.0);
