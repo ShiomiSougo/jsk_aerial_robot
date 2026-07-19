@@ -2,93 +2,76 @@
 # -*- coding: utf-8 -*-
 
 """
-Hydrus-Xi 変形シーケンス（gimbal1 固定・joint1 サーボ駆動版）rev.8
+Hydrus-Xi 変形シーケンス（gimbal1 固定・joint1 サーボ駆動版）rev.10
 
 目的:
   psi_1 (gimbal1 の vectoring 角) を固定したまま joint1 の変形を成立させる。
 
 --------------------------------------------------------------------------
-rev.8 での変更（rev.7 からの差分）— スピン速度の可変化（対策A）
+rev.10 での変更（rev.8 からの差分）— 危険域スピン速度の3段階比較実験化
 --------------------------------------------------------------------------
+[追加P] 「危険域(fc_t_min低下時)でのgimbal1スピン速度」を
+        fast / normal / slow の3モードから、実行のたびにコマンドライン引数
+        で選べるようにした。
+
+        背景: rev.8で「危険域だけ減速する」対策(slow相当)を試したが、
+        改善したのか悪化させたのかを比較実験できていなかった。
+        また「危険域で逆に加速する」(fast)という対案も、根本原因
+        (nloptの探索範囲±0.2radの狭さ)とは無関係な対症療法である上、
+        理屈の上ではむしろ探索が追いつかなくなり悪化させるリスクも
+        指摘されている。3モードを同じコードから素早く切り替えて
+        比較できるようにし、次の実験を楽にすることが本revの目的。
+
+        (P-1) SPIN_RATE_FAST / NORMAL / SLOW の3値を用意。
+        (P-2) DANGER_SPEED_MODE ("fast"/"normal"/"slow") で、危険域中に
+              どのレートを使うかを切り替える。"normal"は危険域でも
+              速度を変えない対照群（rev.7以前の挙動と同じ）。
+        (P-3) 起動時にモードをコマンドライン引数 --speed=MODE で指定できる
+              ようにした（省略時は "normal"）。毎回コードを書き換えずに
+              3モードを行き来できる。
+        (P-4) ログに現在のモード(danger_mode)を明記し、後から
+              どのモードで何が起きたかを取り違えないようにした。
+
+--------------------------------------------------------------------------
+継続している変更（rev.8 まで）
+--------------------------------------------------------------------------
+[追加O] plan_debug に実際のgimbal角(opt_gimbal_angles_)が付加されるように
+        なったため、gimbalsとして保持（C++側rev.9対応、本ファイルでは
+        _plan_debug_cbのみ関係）。
+
 [追加N] fc_t_min に応じてgimbal1スピン速度を落とす（ヒステリシス付き）。
+        rev.10で3モード化されたため、このロジック自体はDANGER_SPEED_MODE
+        の分岐に統合された。
 
-        rev.7までの調査で、gimbal1スピン中にfc_t_minの谷（特異点近傍）を
-        通過する際、C++側nloptの探索範囲(±0.2rad)内では十分な解を
-        見つけられず stabilityCheck NG -> 探索範囲がPIへリセット -> 
-        gimbal2,3,4が不連続にジャンプ、という現象が（毎回ではないが）
-        発生することが確認された。同時刻に実機側LQIゲイン生成も
-        一時停止しており、最も危険な組み合わせになっていた。
-
-        対策として、fc_t_minが小さくなったらスピン速度自体を落とし、
-        nloptが±0.2radの狭い探索範囲内でも解を追従しやすくすることで、
-        PIリセット自体の発生を抑制できないか検証する。
-
-        (N-1) SPIN_SLOWDOWN_ENTER を下回ったら減速モードに入る。
-        (N-2) SPIN_SLOWDOWN_EXIT を上回ったら通常速度に戻す
-              （ENTER/EXITを別値にしてヒステリシスを持たせ、閾値付近での
-              頻繁な速度切り替え＝ガタつきを防ぐ）。
-        (N-3) スピンログに rate（実際に使われた速度）と slow（減速中か）
-              を追記し、後で「減速がPIリセット回避に効いたか」を
-              plan_debugのjump/stab_okと突き合わせて検証できるようにする。
-
---------------------------------------------------------------------------
-継続している変更（rev.7 まで）
---------------------------------------------------------------------------
 [追加M] /hydrus_xi/plan_debug (C++側 navigator の診断トピック) を購読し、
-        スピンテスト中のログに統合。
+        スピンテスト中のログに統合 (stab_ok/delta/invalid/jump)。
 
-        C++側 plan() が「前周期の解が stabilityCheck NG -> 探索範囲を
-        gimbal_delta_angle から一気に PI へリセット」する箇所があり、
-        これが谷（特異点近傍）通過時の tau_min 急落・急回復（不連続な
-        ジャンプ）の原因ではないかという仮説を検証するため、以下を追加:
-
-        (M-1) plan_debug の購読・保持 (_plan_debug_cb)。
-        (M-2) スピンループの通常ログに stab_ok/delta/invalid/jump を追記。
-        (M-3) jump が閾値(JUMP_WARN_THRESH)を超えた瞬間は throttle なしで
-              即座に warn 出力し、谷とジャンプの時刻相関を取りこぼさない
-              ようにする。
-
-[追加K] psi1 スルー中の tau_min ガードと分枝リトライ。
-
-        残課題B: 開始形態が直線近傍（q1≈0）だと、psi1 を固定角へスルーする
-        大回転（例: +1.43 -> -0.30 で 1.73 rad）の途中で特異形態を踏み、
-        joint を 1 つも動かさないうちに tau_min=0 で abort していた。
-
-        案A（psi1 スルー前にも joint2,3 を開く）は rev.5 の PREP で既に
-        行っているが、それだけでは直線近傍からの psi1 大回転を救えなかった。
-        そこで本 rev では次を追加する:
-
-        (K-1) スルー中の tau_min を SLEW_FC_T_MIN_MIN で監視し、下回ったら
-              「そのスルー経路は特異点を踏む」と判定して即座に中断する
-              （0 になるまで待たない）。
-
-        (K-2) 中断したら、もう一方の分枝（a<->b）へ目標を切り替えて
-              スルーをやり直す。sin(a)=sin(pi-a) で joint1 モーメントは同じ
-              だが、回転経路が逆側を通るので特異点を踏まずに届く可能性がある。
-
-        (K-3) 両分枝とも踏む場合は、その開始形態からの joint1 固定変形は
-              不可能と判定して abort する（残課題として記録）。
-
-[変更L] _pick_gimbal_target が両分枝の値を返すようにし、スルー失敗時に
-        呼び出し側で切り替えられるようにした。
-
+[追加K] psi1 スルー中の tau_min ガードと分枝リトライ（分枝a/bの自動切替）。
 [追加J] 特異点通過の事前準備 PREP（joint1 が危険帯を通るとき joint2,3 を展開）。
 [変更I] 変形順序 joint1 -> joint2,3。
 [変更D/追加E/修正F] psi1 解放と GIMBAL_RELEASE、再送判定 self.fix_active。
 [修正A/追加C] 固定完了判定、sweep モード。
 
 --------------------------------------------------------------------------
-既知の残課題（rev.8 でも未解決）
+既知の残課題（rev.10 でも未解決）
 --------------------------------------------------------------------------
 残課題A: 目標の joint3 が符号反転すると joint2,3 畳み直しで特異点を踏む。
          （例: -0.9 0.3 -0.3）。本 rev では未対策。
 
-残課題B-2: スピン速度の可変化（本rev）でPIリセットの発生頻度がどう変わるか
-           はまだ未検証。閾値(SPIN_SLOWDOWN_ENTER/EXIT)と減速率
-           (SPIN_RATE_SLOW)のチューニングは次rev以降の課題。
+残課題B-3: 谷での「凍結時間」が0.6秒〜2.9秒とばらつく原因は未解明。
+           探索範囲の逐次拡大（対策②、次rev予定）の方が根本原因に
+           直接効くと考えられ、優先度は本rev(速度比較実験)より高い。
 
 使用例:
-  rosrun hydrus_xi hydrus_xi_gimbal_fixed_sequence.py -0.9 0.3 0.3
+  # 危険域で速度を変えない対照群（省略時のデフォルト）
+  rosrun hydrus_xi hydrus_xi_deformation_sequence.py 0.3 1 1
+
+  # 危険域で1/4に減速（rev.8相当）
+  rosrun hydrus_xi hydrus_xi_deformation_sequence.py 0.3 1 1 --speed=slow
+
+  # 危険域で2.5倍に加速
+  rosrun hydrus_xi hydrus_xi_deformation_sequence.py 0.3 1 1 --speed=fast
+
   rosrun hydrus_xi hydrus_xi_gimbal_fixed_sequence.py --sweep
 """
 
@@ -140,14 +123,20 @@ JUMP_WARN_THRESH = 0.3   # [rad] gimbal2,3,4 の前周期解との差分がこ�
                           #       throttle なしで即座に warn（谷通過の瞬間を取りこぼさない）
 # ---------------------------------------------------------------------------
 
-# ---- rev.8 [追加N]: fc_t_min に応じたスピン速度の可変化 ----------------------
-SPIN_RATE_NORMAL = 0.02    # [rad/loop] 通常速度（従来のまま、20Hzで0.4rad/s）
-SPIN_RATE_SLOW    = 0.005  # [rad/loop] 減速時の速度（通常の1/4、20Hzで0.1rad/s）
+# ---- rev.10 [追加P]: 危険域でのgimbal1スピン速度 3モード比較実験 -----------
+SPIN_RATE_NORMAL = 0.02    # [rad/loop] 基準速度（20Hzで0.4rad/s）。安全域では常にこれを使う。
+SPIN_RATE_SLOW    = 0.005  # [rad/loop] slowモード時、危険域で使う速度（基準の1/4）
+SPIN_RATE_FAST    = 0.05   # [rad/loop] fastモード時、危険域で使う速度（基準の2.5倍）
 
-SPIN_SLOWDOWN_ENTER = 2.0  # [Nm] fc_t_minがこれを下回ったら減速モードに入る
-SPIN_SLOWDOWN_EXIT  = 3.0  # [Nm] fc_t_minがこれを上回ったら通常速度に戻す
+SPIN_SLOWDOWN_ENTER = 2.0  # [Nm] fc_t_minがこれを下回ったら「危険域」に入ったと判定
+SPIN_SLOWDOWN_EXIT  = 3.0  # [Nm] fc_t_minがこれを上回ったら「危険域」を抜けたと判定
                             #      (ENTER < EXIT のヒステリシスで、閾値付近の
                             #       頻繁な切り替えを防ぐ)
+
+DEFAULT_DANGER_SPEED_MODE = "normal"  # コマンドラインで --speed= が省略された場合の既定値
+                                       # "normal": 危険域でも速度を変えない（対照群）
+                                       # "slow"  : 危険域で SPIN_RATE_SLOW を使う
+                                       # "fast"  : 危険域で SPIN_RATE_FAST を使う
 # ---------------------------------------------------------------------------
 
 GIMBAL_ERR_THRESH = 0.02
@@ -180,7 +169,7 @@ JOINT1_CONTROLLER = "/hydrus_xi/servo_controller/joints/controller1/simulation"
 
 class GimbalFixedSequencer(object):
 
-    def __init__(self, q1, q2, q3, sweep=False):
+    def __init__(self, q1, q2, q3, sweep=False, danger_speed_mode=DEFAULT_DANGER_SPEED_MODE):
         self.joint_names = ['joint1', 'joint2', 'joint3']
         self.target_q = {'joint1': q1, 'joint2': q2, 'joint3': q3}
 
@@ -218,8 +207,12 @@ class GimbalFixedSequencer(object):
         self.branch_current = None  # 現在試している分枝キー
         self.slew_start_psi = None  # スルー開始時の psi1（過渡判定用）
 
-        # rev.8 [追加N]: スピン速度可変化用の状態
-        self.spin_slow_mode = False  # 現在減速中かどうか
+        # rev.10 [追加P]: 危険域スピン速度モード
+        self.danger_speed_mode = danger_speed_mode if danger_speed_mode in ("fast", "normal", "slow") else "normal"
+        self.spin_slow_mode = False  # 現在「危険域」に入っているかどうか（名前は rev.8 からの互換で維持）
+        rospy.loginfo("[Seq] danger-zone spin speed mode = '%s' "
+                      "(normal=%.4f, slow=%.4f, fast=%.4f rad/loop)",
+                      self.danger_speed_mode, SPIN_RATE_NORMAL, SPIN_RATE_SLOW, SPIN_RATE_FAST)
 
         self.joints_ctrl_pub = rospy.Publisher('/hydrus_xi/joints_ctrl', JointState, queue_size=1)
         self.fix_cmd_pub     = rospy.Publisher('/hydrus_xi/fixed_gimbal_cmd', Float64MultiArray, queue_size=1)
@@ -227,12 +220,13 @@ class GimbalFixedSequencer(object):
         self.switch_ctrl = rospy.ServiceProxy(
             '/hydrus_xi/controller_manager/switch_controller', SwitchController)
 
-        # rev.7 [追加M]: plan_debug (C++側 navigator の診断トピック) の購読
+        # rev.7 [追加M] / rev.9 [追加O]: plan_debug (C++側 navigator の診断トピック) の購読
         #   [0] stab_ok  : 前周期の解が stabilityCheck OK だったか(1.0/0.0)
         #   [1] delta    : このplan()周期で使われた探索範囲の半幅 [rad]
         #                  (stab_ok=0.0 のときは PI にリセットされているはず)
         #   [2] invalid  : この周期のnlopt内でstabilityCheckが失敗した回数
         #   [3] jump     : gimbal2,3,4のうち前周期解との最大差分 [rad]
+        #   [4..]        : 実際のgimbal角(opt_gimbal_angles_)。C++側rev.9で追加
         self.plan_debug = {'stab_ok': 1.0, 'delta': 0.0, 'invalid': 0.0, 'jump': 0.0, 'gimbals': []}
         rospy.Subscriber('/hydrus_xi/plan_debug', Float64MultiArray, self._plan_debug_cb)
 
@@ -294,7 +288,7 @@ class GimbalFixedSequencer(object):
         self.fix_state_received = True
 
     def _plan_debug_cb(self, msg):
-        """rev.7 [追加M]: C++側 navigator の診断トピックを受信・保持するだけ。
+        """rev.7 [追加M] / rev.9 [追加O]: C++側 navigator の診断トピックを受信・保持するだけ。
         警告判定やログ出力はスピンループ側（_step_joint1_try1）で行う。"""
         if len(msg.data) < 4:
             return
@@ -657,24 +651,33 @@ class GimbalFixedSequencer(object):
                 self._spin_cmd = self.fix_current
                 self._spin_travel = 0.0
                 self.spin_slow_mode = False
-                rospy.loginfo("[Seq] joint1_try1: start gimbal1 spin from %+.3f (joint1 still held)",
-                              self._spin_cmd)
+                rospy.loginfo("[Seq] joint1_try1: start gimbal1 spin from %+.3f (joint1 still held, "
+                              "danger-zone mode='%s')", self._spin_cmd, self.danger_speed_mode)
 
-            # rev.8 [追加N]: fc_t_min に応じてスピン速度を切り替える（ヒステリシス付き）
-            #   減速中(spin_slow_mode=True)は EXIT を上回るまで解除しない。
-            #   通常中(spin_slow_mode=False)は ENTER を下回ったら減速に入る。
+            # rev.10 [追加P]: fc_t_min に応じて「危険域に入ったか」を判定するのは
+            #   rev.8 までと同じヒステリシス。危険域中にどのレートを使うかだけが
+            #   danger_speed_mode によって変わる。
             if self.spin_slow_mode:
                 if self.fc_t_min > SPIN_SLOWDOWN_EXIT:
                     self.spin_slow_mode = False
-                    rospy.loginfo("[Seq] spin: SLOWDOWN released (fc_t_min=%.3f > %.2f)",
-                                  self.fc_t_min, SPIN_SLOWDOWN_EXIT)
+                    rospy.loginfo("[Seq] spin: DANGER ZONE exited (mode='%s', fc_t_min=%.3f > %.2f)",
+                                  self.danger_speed_mode, self.fc_t_min, SPIN_SLOWDOWN_EXIT)
             else:
                 if self.fc_t_min < SPIN_SLOWDOWN_ENTER:
                     self.spin_slow_mode = True
-                    rospy.loginfo("[Seq] spin: SLOWDOWN engaged (fc_t_min=%.3f < %.2f)",
-                                  self.fc_t_min, SPIN_SLOWDOWN_ENTER)
+                    rospy.loginfo("[Seq] spin: DANGER ZONE entered (mode='%s', fc_t_min=%.3f < %.2f)",
+                                  self.danger_speed_mode, self.fc_t_min, SPIN_SLOWDOWN_ENTER)
 
-            current_rate = SPIN_RATE_SLOW if self.spin_slow_mode else SPIN_RATE_NORMAL
+            # rev.10 [追加P-2]: 危険域中に使うレートをモードで切り替える。
+            #   "normal" は危険域でも SPIN_RATE_NORMAL のまま（対照群、rev.7以前と同じ挙動）。
+            if not self.spin_slow_mode:
+                current_rate = SPIN_RATE_NORMAL
+            elif self.danger_speed_mode == "slow":
+                current_rate = SPIN_RATE_SLOW
+            elif self.danger_speed_mode == "fast":
+                current_rate = SPIN_RATE_FAST
+            else:  # "normal"
+                current_rate = SPIN_RATE_NORMAL
 
             # 少しずつ目標角を進める（速度は上記で決定した current_rate を使用）
             self._spin_cmd = self._norm(self._spin_cmd + current_rate)
@@ -683,14 +686,15 @@ class GimbalFixedSequencer(object):
             self._hold_fix()
             self._send_joint_cmd()   # joint は保持したまま
 
-            # rev.8 [追加N-3] / rev.7 [追加M-2]: gimbal 角ごとの安定性指標 + plan_debug
-            #   に加え、実際に使われたスピン速度(rate)と減速中か(slow)を記録
+            # rev.10 [追加P-4] / rev.7 [追加M-2]: gimbal 角ごとの安定性指標 + plan_debug
+            #   に加え、現在のモード(mode)・実際に使われたスピン速度(rate)・
+            #   危険域中か(danger)を記録
             rospy.loginfo_throttle(
                 0.25,
-                "[Seq] spin: gimbal=%+.4f fc_t_min=%.3f travel=%.2f/%.2f rate=%.4f slow=%d "
+                "[Seq] spin: gimbal=%+.4f fc_t_min=%.3f travel=%.2f/%.2f mode=%s rate=%.4f danger=%d "
                 "| stab_ok=%d delta=%.2f invalid=%d jump=%.3f",
                 self.fix_current, self.fc_t_min, self._spin_travel, 2 * math.pi,
-                current_rate, int(self.spin_slow_mode),
+                self.danger_speed_mode, current_rate, int(self.spin_slow_mode),
                 int(self.plan_debug['stab_ok']), self.plan_debug['delta'],
                 int(self.plan_debug['invalid']), self.plan_debug['jump'])
 
@@ -699,13 +703,14 @@ class GimbalFixedSequencer(object):
             if self.plan_debug['jump'] > JUMP_WARN_THRESH:
                 rospy.logwarn(
                     "[Seq] spin: JUMP EVENT gimbal=%+.4f fc_t_min=%.3f jump=%.3f "
-                    "invalid=%d stab_ok=%d delta=%.2f slow=%d",
+                    "invalid=%d stab_ok=%d delta=%.2f mode=%s danger=%d",
                     self.fix_current, self.fc_t_min, self.plan_debug['jump'],
                     int(self.plan_debug['invalid']), int(self.plan_debug['stab_ok']),
-                    self.plan_debug['delta'], int(self.spin_slow_mode))
+                    self.plan_debug['delta'], self.danger_speed_mode, int(self.spin_slow_mode))
 
             if self._spin_travel >= 2 * math.pi:
-                rospy.loginfo("[Seq] joint1_try1: spin done (1 revolution)")
+                rospy.loginfo("[Seq] joint1_try1: spin done (1 revolution, mode='%s')",
+                              self.danger_speed_mode)
                 self._spin_done = True
             return
         
@@ -749,12 +754,12 @@ class GimbalFixedSequencer(object):
 
         if self._elapsed() < 0.1:
             tag = "ABORTED" if self.aborted else "DONE"
-            rospy.loginfo("[Seq] %s%s  q=(%.4f/%.4f, %.4f/%.4f, %.4f/%.4f)  psi1=%+.3f  fc_t_min=%.3f",
+            rospy.loginfo("[Seq] %s%s  q=(%.4f/%.4f, %.4f/%.4f, %.4f/%.4f)  psi1=%+.3f  fc_t_min=%.3f  mode='%s'",
                           tag, " (prep used)" if self.prep_used else "",
                           self.current_q['joint1'], self.target_q['joint1'],
                           self.current_q['joint2'], self.target_q['joint2'],
                           self.current_q['joint3'], self.target_q['joint3'],
-                          self.fix_current, self.fc_t_min)
+                          self.fix_current, self.fc_t_min, self.danger_speed_mode)
 
     # ---- sweep モード ----
     def _step_sweep(self):
@@ -824,11 +829,24 @@ def main():
     sweep = '--sweep' in args
     args = [a for a in args if a != '--sweep']
 
+    # rev.10 [追加P-3]: --speed=fast / --speed=normal / --speed=slow を抽出。
+    #   省略時は DEFAULT_DANGER_SPEED_MODE ("normal") を使う。
+    danger_speed_mode = DEFAULT_DANGER_SPEED_MODE
+    speed_args = [a for a in args if a.startswith('--speed=')]
+    if speed_args:
+        candidate = speed_args[-1].split('=', 1)[1].strip().lower()
+        if candidate in ("fast", "normal", "slow"):
+            danger_speed_mode = candidate
+        else:
+            rospy.logwarn("[Seq] unknown --speed='%s' (must be fast/normal/slow). "
+                          "falling back to '%s'.", candidate, DEFAULT_DANGER_SPEED_MODE)
+    args = [a for a in args if not a.startswith('--speed=')]
+
     q = [0.0, 0.0, 0.0]
     if len(args) >= 3:
         q = [float(args[i]) for i in range(3)]
 
-    seq = GimbalFixedSequencer(q[0], q[1], q[2], sweep=sweep)
+    seq = GimbalFixedSequencer(q[0], q[1], q[2], sweep=sweep, danger_speed_mode=danger_speed_mode)
     rate = rospy.Rate(10)
 
     while not rospy.is_shutdown():
@@ -837,7 +855,7 @@ def main():
                 rospy.loginfo("[Sweep] finished.")
                 break
             print("\n" + "=" * 56)
-            print(" Hydrus-Xi : joint1 thrust-deform (prep + slew branch retry)")
+            print(" Hydrus-Xi : joint1 thrust-deform (danger-zone speed mode='%s')" % seq.danger_speed_mode)
             print(" next target [q1 q2 q3]  (q to quit)")
             print("=" * 56)
             try:
