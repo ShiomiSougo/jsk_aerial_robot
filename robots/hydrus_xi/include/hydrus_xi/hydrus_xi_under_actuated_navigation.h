@@ -116,6 +116,27 @@ namespace aerial_robot_navigation
     double gimbal_delta_max_time_;          // 1周期内でエスカレーションに使える時間予算[s]（既定0.03）
     /* ================================================================================= */
 
+    /* ================= ★ [rev.13 追加] gimbal2,3,4 publish角のスルーレート制限 =========
+     *
+     * エスカレーションが π 近い大ジャンプを「検証済みの安定解」として見つけた
+     * 場合でも、それを1周期(50ms)で瞬時に機体へ送ると、幾何学的には正しくても
+     * 実際のサーボ/機体がついていけず過渡的に不安定化することが実験で判明した
+     * （joint1=1.45スピン実験、LARGE GIMBAL JUMP: 2.95radと同時刻にLQI凍結・
+     * int16_tオーバーフローが発生）。
+     *
+     * nloptが求めた目標角(opt_gimbal_angles_)と、実際にpublishする角度
+     * (published_gimbal_angles_)を分離し、後者だけ gimbal_publish_slew_rate_
+     * [rad/s] で緩やかに追従させる。gimbal1のfix_gimbal_current_と同じ考え方。
+     *
+     * 注意: stabilityCheck・fc_t_min計算・次周期のx0は引き続き
+     * opt_gimbal_angles_（目標角）ベースのまま。追従が完了していない間は
+     * publishされているfc_t_minは「目標角に到達した場合の参考値」であり、
+     * 実際の機体の安全マージンとは一致しない可能性がある点に留意。
+     */
+    std::vector<double> published_gimbal_angles_; // 実際にpublishする角度（レート制限済み）
+    double gimbal_publish_slew_rate_;              // [rad/s] gimbal2,3,4 publish角のスルーレート上限（既定3.0）
+    /* ================================================================================= */
+
     std::vector<double> opt_gimbal_angles_, prev_opt_gimbal_angles_;
 
     void threadFunc();

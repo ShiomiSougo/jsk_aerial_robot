@@ -269,6 +269,8 @@ namespace
 HydrusXiUnderActuatedNavigator::HydrusXiUnderActuatedNavigator():
     opt_gimbal_angles_(0),
     prev_opt_gimbal_angles_(0),
+    published_gimbal_angles_(0),
+    gimbal_publish_slew_rate_(3.0),
     max_min_yaw_(0),
     control_gimbal_names_(0),
     control_gimbal_indices_(0),
@@ -757,6 +759,29 @@ bool HydrusXiUnderActuatedNavigator::plan()
       std::cout << "nlopt failed: " << e.what() << std::endl;
     }
 
+  /* ---- ★ [rev.13 追加] publish角へのレート制限（gimbal1のfix_gimbal_current_と同じ考え方）
+   *   opt_gimbal_angles_ は nlopt が求めた「目標角」。escalation が π 近い
+   *   大ジャンプを検証済み解として見つけた場合でも、実際に機体へ送る角度
+   *   (published_gimbal_angles_) は gimbal_publish_slew_rate_ [rad/s] で
+   *   緩やかに追従させる。これにより、幾何学的に正しい解であっても
+   *   1周期で瞬時に反映されることによる過渡的な不安定化を防ぐ。
+   *   固定ジンバル（active_fix_idx_）は対象外（別のスルー機構が既にある）。 */
+  if(published_gimbal_angles_.size() != opt_gimbal_angles_.size())
+    published_gimbal_angles_ = opt_gimbal_angles_; // 初回はそのまま採用
+
+  double publish_step = gimbal_publish_slew_rate_ * plan_du_;
+  for(size_t i = 0; i < opt_gimbal_angles_.size(); i++)
+    {
+      if(active_fix_enabled_ && static_cast<int>(i) == active_fix_idx_) continue; // 固定ジンバルは別管理
+
+      double err = normalizeAngle(opt_gimbal_angles_.at(i) - published_gimbal_angles_.at(i));
+      if(fabs(err) < publish_step)
+        published_gimbal_angles_.at(i) = opt_gimbal_angles_.at(i);
+      else
+        published_gimbal_angles_.at(i) =
+          normalizeAngle(published_gimbal_angles_.at(i) + (err > 0 ? publish_step : -publish_step));
+    }
+
   /* ---- ジンバル角の publish ---------------------------------------------- */
   sensor_msgs::JointState gimbal_msg;
   gimbal_msg.header.stamp = ros::Time::now();
@@ -764,7 +789,7 @@ bool HydrusXiUnderActuatedNavigator::plan()
   for(int i = 0; i < n; i++)
     {
       gimbal_msg.name.push_back(control_gimbal_names_.at(i));
-      gimbal_msg.position.push_back(opt_gimbal_angles_.at(i));
+      gimbal_msg.position.push_back(published_gimbal_angles_.at(i));
     }
   gimbal_ctrl_pub_.publish(gimbal_msg);
 
@@ -818,6 +843,9 @@ void HydrusXiUnderActuatedNavigator::rosParamInit()
   getParam<int>(navi_nh, "gimbal_delta_max_retries", gimbal_delta_max_retries_, 5);
   getParam<double>(navi_nh, "gimbal_delta_fc_t_min_ok", gimbal_delta_fc_t_min_ok_, 0.05);
   getParam<double>(navi_nh, "gimbal_delta_max_time", gimbal_delta_max_time_, 0.03); // [s] 20Hz(50ms)周期に対する安全弁
+
+  /* ★ [rev.13 追加] gimbal2,3,4 publish角のスルーレート制限 */
+  getParam<double>(navi_nh, "gimbal_publish_slew_rate", gimbal_publish_slew_rate_, 3.0); // [rad/s]
 
   getParam<double>(navi_nh, "force_norm_rate", force_norm_weight_, 2.0);
   getParam<double>(navi_nh, "force_variant_rate", force_variant_weight_, 0.01);
