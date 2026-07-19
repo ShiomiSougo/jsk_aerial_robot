@@ -778,13 +778,13 @@ class GimbalFixedSequencer(object):
                         self.target_q['joint2'], self.target_q['joint3'], self.fc_t_min)
             self._goto(Step.JOINT23_STABILIZE)
 
-        def _step_joint23_stabilize(self):
-            self._send_joint_cmd()
-            self._release_fix()
+    def _step_joint23_stabilize(self):
+        self._send_joint_cmd()
+        self._release_fix()
 
-            if self._settled(['joint2', 'joint3']):
-                rospy.loginfo("[Seq] all settled")
-                self._goto(Step.JOINT1_TRY1)
+        if self._settled(['joint2', 'joint3']):
+            rospy.loginfo("[Seq] all settled")
+            self._goto(Step.JOINT1_TRY1)
 
     def _step_joint1_try1(self):
         """
