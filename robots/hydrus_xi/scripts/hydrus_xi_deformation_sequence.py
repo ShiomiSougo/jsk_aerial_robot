@@ -2,10 +2,40 @@
 # -*- coding: utf-8 -*-
 
 """
-Hydrus-Xi 変形シーケンス（gimbal1 固定・joint1 サーボ駆動版）rev.18
+Hydrus-Xi 変形シーケンス（gimbal1 固定・joint1 サーボ駆動版）rev.19
 
 目的:
   psi_1 (gimbal1 の vectoring 角) を固定したまま joint1 の変形を成立させる。
+
+--------------------------------------------------------------------------
+rev.19 での変更（rev.18 からの差分）— try1のgimbal1目標角を現在角基準に
+--------------------------------------------------------------------------
+【発見】rev.18のtry1（'a'=pi+0.7固定、'b'=pi-0.7固定）で、joint1変形前の
+  gimbal1固定（_pick_gimbal1_target）は意図通り動いていたのに対し、
+  try1側では動作が安定しない現象が確認された。
+
+  原因: joint1変形前の固定は、常に「πに近い現在角」から近距離で
+  目標角へ移動する設計になっていた（移動距離が短く安全）。一方、
+  try1に入る直前のgimbal1角度は、直前のJOINT23_SERVOステップで
+  gimbal1がC++側の自由最適化に委ねられているため、毎回不定である。
+  そのため、固定の"pi+0.7"/"pi-0.7"を目標にすると、出発点によっては
+  非常に長い距離・不定な経路の移動になり、特異形態を横切るリスクが
+  生じていた。
+
+【対策】try1の目標角を、現在のgimbal1角度を基準に選び直すよう変更した。
+  a/bという物理的な向きの意味（joint1にかかる反力の向き）は変えず、
+  そこへ至る経路の出発点合わせだけを行う。
+
+    b = 現在のgimbal1角度 (self.fix_current)
+    b ÷ pi の商を c、余りを d とする (b = c*pi + d)
+    direction='a' -> target = c*pi + 0.7
+    direction='b' -> target = c*pi - 0.7
+
+  新規メソッド _pick_try1_target(direction) として実装し、main()の
+  ASK_TRY1_DIRECTION処理から呼び出す。b, c, d, targetをすべて表示する。
+
+  なお、joint1変形前の _pick_gimbal1_target（joint1角度ベースのルール）
+  は今回変更していない。
 
 --------------------------------------------------------------------------
 rev.18 での変更（rev.17 からの差分）— 「今できていることだけ」に制限
@@ -441,6 +471,44 @@ class GimbalFixedSequencer(object):
                           "-> gimbal1 = pi - %.1f = %+.3f rad",
                           self.target_q['joint1'], remainder, a, GIMBAL1_PICK_OFFSET, target)
         return target
+
+    # ---- 【rev.19追加】try1用: 現在のgimbal1角度を基準にした目標角の決定 -------
+    def _pick_try1_target(self, direction):
+        """
+        try1でgimbal1を固定する目標角を、現在のgimbal1角度(self.fix_current)
+        を基準に決める。
+
+        joint1変形前(_pick_gimbal1_target)と違い、try1に入る直前の
+        gimbal1角度はJOINT23_SERVO中の自由最適化の結果次第で毎回不定になる。
+        そこで、固定の"pi+0.7"/"pi-0.7"ではなく、現在角bをpiで割った商cを
+        求め、その"pi*cの帯"を基準にオフセットする。これにより、a/bという
+        物理的な向きの意味は変えずに、現在角から近い目標角を毎回選び直せる。
+
+          b = 現在のgimbal1角度 (self.fix_current)
+          b ÷ pi の商を c、余りを d とする (b = c*pi + d)
+          direction='a' -> target = c*pi + 0.7
+          direction='b' -> target = c*pi - 0.7
+
+        戻り値: (target, c, d) のタプル。b, c, d, target はすべて呼び出し
+        元で表示する（今回の変更の目的そのものであるため）。
+        """
+        b = self.fix_current
+        c, d = divmod(b, math.pi)
+
+        if direction == 'a':
+            target = c * math.pi + GIMBAL1_PICK_OFFSET
+        elif direction == 'b':
+            target = c * math.pi - GIMBAL1_PICK_OFFSET
+        else:
+            raise ValueError("direction must be 'a' or 'b', got %r" % direction)
+
+        rospy.loginfo("[Seq] try1 gimbal-pick: b(current gimbal1)=%.4f, "
+                      "b/pi -> c=%.1f, d(remainder)=%.4f (b = c*pi + d)",
+                      b, c, d)
+        rospy.loginfo("[Seq] try1 gimbal-pick: direction='%s' -> target = c*pi %s %.1f = %+.3f rad",
+                      direction, '+' if direction == 'a' else '-', GIMBAL1_PICK_OFFSET, target)
+
+        return target, c, d
 
     def _check_fc_t_min(self):
         """固定完了後（joint1 変形中）の tau_min ガード"""
@@ -919,23 +987,23 @@ def main():
 
         elif seq.step == Step.ASK_TRY1_DIRECTION:
             print("\n変形方向は？")
-            print(" a: gimbal1 = pi + %.1f rad に固定" % GIMBAL1_PICK_OFFSET)
-            print(" b: gimbal1 = pi - %.1f rad に固定" % GIMBAL1_PICK_OFFSET)
+            print(" a: gimbal1 = c*pi + %.1f rad に固定（cは現在角basis）" % GIMBAL1_PICK_OFFSET)
+            print(" b: gimbal1 = c*pi - %.1f rad に固定（cは現在角basis）" % GIMBAL1_PICK_OFFSET)
             try:
                 s = input("> ").strip().lower()
             except (KeyboardInterrupt, EOFError):
                 break
             if s == 'a':
-                target = seq._norm(math.pi + GIMBAL1_PICK_OFFSET)
-                msg = "[Seq] try1: direction 'a' selected -> gimbal1 = pi + %.1f = %+.3f rad" % (
-                    GIMBAL1_PICK_OFFSET, target)
+                target, c, d = seq._pick_try1_target('a')
+                msg = ("[Seq] try1: direction 'a' selected -> b(current)=%.4f, c=%.1f, d=%.4f, "
+                       "target = c*pi + %.1f = %+.3f rad" % (seq.fix_current, c, d, GIMBAL1_PICK_OFFSET, target))
                 print(msg)
                 rospy.loginfo(msg)
                 seq.start_try1(target)
             elif s == 'b':
-                target = seq._norm(math.pi - GIMBAL1_PICK_OFFSET)
-                msg = "[Seq] try1: direction 'b' selected -> gimbal1 = pi - %.1f = %+.3f rad" % (
-                    GIMBAL1_PICK_OFFSET, target)
+                target, c, d = seq._pick_try1_target('b')
+                msg = ("[Seq] try1: direction 'b' selected -> b(current)=%.4f, c=%.1f, d=%.4f, "
+                       "target = c*pi - %.1f = %+.3f rad" % (seq.fix_current, c, d, GIMBAL1_PICK_OFFSET, target))
                 print(msg)
                 rospy.loginfo(msg)
                 seq.start_try1(target)
