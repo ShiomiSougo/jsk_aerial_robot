@@ -237,7 +237,7 @@ JOINT23_PHASE_TIMEOUT = 15.0  # [s] joint2 がこの時間内に到達しなけ�
 # ---------------------------------------------------------------------------
 
 # ---- 【rev.18追加】gimbal1固定角の新ルールで使う定数 -------------------------
-GIMBAL1_PICK_OFFSET = 1.0  # [rad] pi からのオフセット。a>=0でpi+1.0、a<0でpi-1.0
+GIMBAL1_PICK_OFFSET = 0.7  # [rad] pi からのオフセット。a>=0でpi+0.7、a<0でpi-0.7
 # ---------------------------------------------------------------------------
 
 
@@ -521,9 +521,9 @@ class GimbalFixedSequencer(object):
         c, d = divmod(b, math.pi)
 
         if direction == 'a':
-            target = c * math.pi + GIMBAL1_PICK_OFFSET
+            target = self._norm(c * math.pi + GIMBAL1_PICK_OFFSET)
         elif direction == 'b':
-            target = c * math.pi - GIMBAL1_PICK_OFFSET
+            target = self._norm(c * math.pi - GIMBAL1_PICK_OFFSET)
         else:
             raise ValueError("direction must be 'a' or 'b', got %r" % direction)
 
@@ -1012,8 +1012,8 @@ def main():
 
         elif seq.step == Step.ASK_TRY1_DIRECTION:
             print("\n変形方向は？")
-            print(" a（負の方向へ変形）: gimbal1 = c*pi + %.1f rad に固定（cは現在角basis）" % GIMBAL1_PICK_OFFSET)
-            print(" b(正の方向へ変形): gimbal1 = c*pi - %.1f rad に固定（cは現在角basis）" % GIMBAL1_PICK_OFFSET)
+            print(" a: gimbal1 = c*pi + %.1f rad に固定（cは現在角basis）" % GIMBAL1_PICK_OFFSET)
+            print(" b: gimbal1 = c*pi - %.1f rad に固定（cは現在角basis）" % GIMBAL1_PICK_OFFSET)
             try:
                 s = input("> ").strip().lower()
             except (KeyboardInterrupt, EOFError):
