@@ -2,10 +2,29 @@
 # -*- coding: utf-8 -*-
 
 """
-Hydrus-Xi 変形シーケンス（gimbal1 固定・joint1 サーボ駆動版）rev.19
+Hydrus-Xi 変形シーケンス（gimbal1 固定・joint1 サーボ駆動版）rev.20
 
 目的:
   psi_1 (gimbal1 の vectoring 角) を固定したまま joint1 の変形を成立させる。
+
+--------------------------------------------------------------------------
+rev.20 での変更（rev.19 からの差分）— joint1変形前のgimbal1選択の符号修正
+--------------------------------------------------------------------------
+【発見】try1でa（c*pi+0.7）とb（c*pi-0.7）の両方を実際に試した結果、
+  以下の対応関係が正しいことが確認された。
+
+    目標角 - 現在角 が
+      正 -> b型（c*pi - 0.7）が正しい
+      負 -> a型（c*pi + 0.7）が正しい
+
+  一方、rev.18で実装した_pick_gimbal1_target（joint1変形前のgimbal1
+  固定角選択）は、この対応が逆になっていた（a=target-remainderが
+  正のときa型、負のときb型を選んでいた）。
+
+【修正】_pick_gimbal1_targetのif/elseの中身（a型/b型の対応）を入れ替え、
+  try1で確認された対応関係と一致させた。_pick_try1_targetのa/b公式
+  自体（a:+0.7, b:-0.7）は変更していない（これらは正しい基準として
+  使われた）。
 
 --------------------------------------------------------------------------
 rev.19 での変更（rev.18 からの差分）— try1のgimbal1目標角を現在角基準に
@@ -446,14 +465,20 @@ class GimbalFixedSequencer(object):
         db = abs(self._norm(cand['b'] - psi_now))
         return ['a', 'b'] if da <= db else ['b', 'a']
 
-    # ---- 【rev.18追加】gimbal1固定角の新ルール ----------------------------
+    # ---- 【rev.18追加、rev.20で符号修正】gimbal1固定角の新ルール ------------
     def _pick_gimbal1_target(self):
         """
         joint1を動かす前に、gimbal1の固定角を以下のルールで1つだけ決める。
           remainder = 現在のjoint1角度 mod pi(3.14)
           a = 目標のjoint1角度 - remainder
-          a が正 -> gimbal1 = pi + 0.7
-          a が負 -> gimbal1 = pi - 0.7
+          a が正 -> gimbal1 = pi - 0.7 （b型）
+          a が負 -> gimbal1 = pi + 0.7 （a型）
+
+        【rev.20修正】try1でa/bを両方実際に試した結果、
+          「目標角-現在角が正のときはb型（-0.7側）、負のときはa型（+0.7側）」
+          が正しい対応であることが確認された。rev.18時点ではこの分岐が
+          逆（正->a型、負->b型）になっていたため、if/elseの中身を入れ替えた。
+          _pick_try1_targetのa/b公式自体（a:+0.7, b:-0.7）は変更していない。
         """
         remainder = self.current_q['joint1'] % math.pi
         rospy.loginfo("[Seq] joint1 gimbal-pick: current=%.4f rad, current mod pi = %.4f rad",
@@ -461,14 +486,14 @@ class GimbalFixedSequencer(object):
 
         a = self.target_q['joint1'] - remainder
         if a >= 0:
-            target = self._norm(math.pi + GIMBAL1_PICK_OFFSET)
+            target = self._norm(math.pi - GIMBAL1_PICK_OFFSET)
             rospy.loginfo("[Seq] joint1 gimbal-pick: a = target(%.4f) - remainder(%.4f) = %+.4f (>=0) "
-                          "-> gimbal1 = pi + %.1f = %+.3f rad",
+                          "-> gimbal1 = pi - %.1f (b-type) = %+.3f rad",
                           self.target_q['joint1'], remainder, a, GIMBAL1_PICK_OFFSET, target)
         else:
-            target = self._norm(math.pi - GIMBAL1_PICK_OFFSET)
+            target = self._norm(math.pi + GIMBAL1_PICK_OFFSET)
             rospy.loginfo("[Seq] joint1 gimbal-pick: a = target(%.4f) - remainder(%.4f) = %+.4f (<0) "
-                          "-> gimbal1 = pi - %.1f = %+.3f rad",
+                          "-> gimbal1 = pi + %.1f (a-type) = %+.3f rad",
                           self.target_q['joint1'], remainder, a, GIMBAL1_PICK_OFFSET, target)
         return target
 
@@ -987,8 +1012,8 @@ def main():
 
         elif seq.step == Step.ASK_TRY1_DIRECTION:
             print("\n変形方向は？")
-            print(" a: gimbal1 = c*pi + %.1f rad に固定（cは現在角basis）" % GIMBAL1_PICK_OFFSET)
-            print(" b: gimbal1 = c*pi - %.1f rad に固定（cは現在角basis）" % GIMBAL1_PICK_OFFSET)
+            print(" a（）: gimbal1 = c*pi + %.1f rad に固定（cは現在角basis）" % GIMBAL1_PICK_OFFSET)
+            print(" b(正の方向へ変形): gimbal1 = c*pi - %.1f rad に固定（cは現在角basis）" % GIMBAL1_PICK_OFFSET)
             try:
                 s = input("> ").strip().lower()
             except (KeyboardInterrupt, EOFError):
