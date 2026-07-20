@@ -2,10 +2,33 @@
 # -*- coding: utf-8 -*-
 
 """
-Hydrus-Xi 変形シーケンス（gimbal1 固定・joint1 サーボ駆動版）rev.24
+Hydrus-Xi 変形シーケンス（gimbal1 固定・joint1 サーボ駆動版）rev.25
 
 目的:
   psi_1 (gimbal1 の vectoring 角) を固定したまま joint1 の変形を成立させる。
+
+--------------------------------------------------------------------------
+rev.25 での変更（rev.24 からの差分）— joint1変形前のgimbal1選択を再修正
+--------------------------------------------------------------------------
+【背景】rev.24でtry1側（_pick_try1_target）の周期の取り違えバグ
+  （mod pi -> mod 2pi）を修正した結果、真の対応関係が
+  「a型 = joint1が正の方向に動く、b型 = 負の方向に動く」であることが
+  確定した。
+
+  一方、rev.20で行った_pick_gimbal1_target（joint1変形前のgimbal1固定
+  角選択）の符号修正は、当時まだmod piバグが残っていたtry1の実験結果
+  から逆算したものだった。つまりrev.20の「確認結果」自体が、この
+  バグの影響を受けた不正確なデータに基づいていた可能性が高い。
+
+【修正】rev.24でのバグ修正を踏まえ、_pick_gimbal1_targetの分岐を
+  rev.18の元の対応（rev.20で一度入れ替える前の状態）へ戻した。
+
+    a = 目標のjoint1角度 - remainder
+    a が正（joint1が正の方向に動く） -> gimbal1 = pi + 0.7（a型）
+    a が負（joint1が負の方向に動く） -> gimbal1 = pi - 0.7（b型）
+
+  これでjoint1変形前のgimbal1選択と、try1のgimbal1選択が、同じ
+  「a=正の向き、b=負の向き」という対応関係で一貫するようになった。
 
 --------------------------------------------------------------------------
 rev.24 での変更（rev.23 からの差分）— try1のa/b取り違えバグの修正
@@ -520,20 +543,28 @@ class GimbalFixedSequencer(object):
         db = abs(self._norm(cand['b'] - psi_now))
         return ['a', 'b'] if da <= db else ['b', 'a']
 
-    # ---- 【rev.18追加、rev.20で符号修正】gimbal1固定角の新ルール ------------
+    # ---- 【rev.18追加、rev.20で符号修正、rev.25で再修正】gimbal1固定角の新ルール ----
     def _pick_gimbal1_target(self):
         """
         joint1を動かす前に、gimbal1の固定角を以下のルールで1つだけ決める。
           remainder = 現在のjoint1角度 mod pi(3.14)
           a = 目標のjoint1角度 - remainder
-          a が正 -> gimbal1 = pi - 0.7 （b型）
-          a が負 -> gimbal1 = pi + 0.7 （a型）
+          a が正 -> gimbal1 = pi + 0.7 （a型 = 正の向き）
+          a が負 -> gimbal1 = pi - 0.7 （b型 = 負の向き）
 
-        【rev.20修正】try1でa/bを両方実際に試した結果、
-          「目標角-現在角が正のときはb型（-0.7側）、負のときはa型（+0.7側）」
-          が正しい対応であることが確認された。rev.18時点ではこの分岐が
-          逆（正->a型、負->b型）になっていたため、if/elseの中身を入れ替えた。
-          _pick_try1_targetのa/b公式自体（a:+0.7, b:-0.7）は変更していない。
+        【rev.20修正】try1でa/bを両方実際に試した結果を踏まえ、この分岐を
+          一度入れ替えた（正->b型、負->a型）。
+
+        【rev.25で再修正】rev.20時点のtry1には、_pick_try1_targetの周期を
+          piで取っていたことによるa型/b型取り違えバグが残っていた
+          （rev.24で修正済み）。つまりrev.20の「確認結果」自体が、この
+          バグの影響を受けた不正確なデータに基づいていた可能性が高い。
+
+          rev.24でバグ修正後に改めて確認したところ、true な対応関係は
+          「a型 = joint1が正の方向に動く、b型 = 負の方向に動く」で
+          あることが確定した。これはrev.18の元々の対応（rev.20で一度
+          入れ替える前の状態）と一致するため、if/elseの中身をrev.18の
+          対応へ戻した。
         """
         remainder = self.current_q['joint1'] % math.pi
         rospy.loginfo("[Seq] joint1 gimbal-pick: current=%.4f rad, current mod pi = %.4f rad",
@@ -541,14 +572,14 @@ class GimbalFixedSequencer(object):
 
         a = self.target_q['joint1'] - remainder
         if a >= 0:
-            target = self._norm(math.pi - GIMBAL1_PICK_OFFSET)
+            target = self._norm(math.pi + GIMBAL1_PICK_OFFSET)
             rospy.loginfo("[Seq] joint1 gimbal-pick: a = target(%.4f) - remainder(%.4f) = %+.4f (>=0) "
-                          "-> gimbal1 = pi - %.1f (b-type) = %+.3f rad",
+                          "-> gimbal1 = pi + %.1f (a-type, positive) = %+.3f rad",
                           self.target_q['joint1'], remainder, a, GIMBAL1_PICK_OFFSET, target)
         else:
-            target = self._norm(math.pi + GIMBAL1_PICK_OFFSET)
+            target = self._norm(math.pi - GIMBAL1_PICK_OFFSET)
             rospy.loginfo("[Seq] joint1 gimbal-pick: a = target(%.4f) - remainder(%.4f) = %+.4f (<0) "
-                          "-> gimbal1 = pi + %.1f (a-type) = %+.3f rad",
+                          "-> gimbal1 = pi - %.1f (b-type, negative) = %+.3f rad",
                           self.target_q['joint1'], remainder, a, GIMBAL1_PICK_OFFSET, target)
         return target
 
@@ -1093,8 +1124,8 @@ def main():
 
         elif seq.step == Step.ASK_TRY1_DIRECTION:
             print("\n変形方向は？")
-            print(" a: gimbal1 = c*2*pi + pi + %.1f rad に固定（cは現在角basis）" % GIMBAL1_PICK_OFFSET)
-            print(" b: gimbal1 = c*2*pi + pi - %.1f rad に固定（cは現在角basis）" % GIMBAL1_PICK_OFFSET)
+            print(" a(正の向き): gimbal1 = c*2*pi + pi + %.1f rad に固定（cは現在角basis）" % GIMBAL1_PICK_OFFSET)
+            print(" b(負の向き): gimbal1 = c*2*pi + pi - %.1f rad に固定（cは現在角basis）" % GIMBAL1_PICK_OFFSET)
             try:
                 s = input("> ").strip().lower()
             except (KeyboardInterrupt, EOFError):
