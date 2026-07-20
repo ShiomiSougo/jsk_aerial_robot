@@ -2,10 +2,59 @@
 # -*- coding: utf-8 -*-
 
 """
-Hydrus-Xi 変形シーケンス（gimbal1 固定・joint1 サーボ駆動版）rev.6
+Hydrus-Xi 変形シーケンス（gimbal1 固定・joint1 サーボ駆動版）rev.18
 
 目的:
   psi_1 (gimbal1 の vectoring 角) を固定したまま joint1 の変形を成立させる。
+
+--------------------------------------------------------------------------
+rev.18 での変更（rev.17 からの差分）— 「今できていることだけ」に制限
+--------------------------------------------------------------------------
+問題が多岐にわたり切り分けが難しくなっていたため、gimbal1の固定角の
+決め方と、joint1_try1の実行内容を、以下のとおり単純なルールに絞った。
+
+【変更1】gimbal1の固定角の決め方を単純化。
+  旧ロジック（_compute_branches / _order_branches、2分岐候補から近い方を
+  選び、スルー中に特異点を踏んだら逆分岐へリトライする方式）は削除せず
+  残すが、呼び出しはしない（未使用のまま保持）。
+
+  新ロジック（_pick_gimbal1_target）:
+    remainder = 現在のjoint1角度 mod pi(3.14)
+    a = 目標のjoint1角度 - remainder
+    a が正: gimbal1 = pi + 0.7 に固定
+    a が負: gimbal1 = pi - 0.7 に固定
+  この1つの候補だけを使ってスルーを開始する（_step_gimbal_fix自体の
+  スルー・tau_min監視ロジックは変更していない。ただし候補が1つしか
+  ないため、スルー中に特異点を踏んだ場合はリトライ先がなく、そのまま
+  ABORTする＝rev.6由来の「両分枝とも踏んだ場合の中断」と同じ扱い）。
+
+【変更2】joint2,3は rev.17 のまま（joint2 -> joint3 の逐次実行、
+  JOINT23_PHASE_TIMEOUT で joint3 へ移行）。変更なし。
+
+【変更3】joint2,3完了後、joint1_try1を実行するか選択させる。
+  新しい Step.ASK_TRY1 を追加。メインループ（対話プロンプト）で
+  「1」を入力すれば実行、「2」を入力すればスキップしてCOMPLETEへ。
+
+【変更4】joint1_try1の中身を、方向選択式に変更。
+  旧ロジック（gimbal1を2π分スピンさせる全周診断）はrev.17で既に
+  コメントアウト済みだったが、rev.18ではこれを削除し、代わりに
+  新しい Step.ASK_TRY1_DIRECTION で「変形方向は？」と質問する:
+    'a' 入力: gimbal1 = pi + 0.7 に固定（このgimbal1目標値を表示）
+    'b' 入力: gimbal1 = pi - 0.7 に固定（このgimbal1目標値を表示）
+  選択後は rev.17 と同じ動作（gimbal1到達待ち→静定待ち→
+  controller1停止→effortゼロpublish）。
+
+--------------------------------------------------------------------------
+rev.17 での変更（rev.6 からの差分）
+--------------------------------------------------------------------------
+【追加1】joint2,3を同時ではなく joint2 -> joint3 の順に逐次実行するよう
+        変更。joint2 が JOINT23_PHASE_TIMEOUT 秒経っても目標に到達
+        しなければ、joint3 の動作へ移行する。
+【追加2】joint1_try1のgimbal1全周スピン診断をコメントアウトにより無効化
+        （rev.18で削除、変更4に統合）。
+【追加3】controller1停止直後、commandトピックへeffort=0を1回publishする
+        処理を追加（ros_control仕様上バッファに残る最後の値を確認・
+        是正する目的。効果は未確認だが、診断目的で残置）。
 
 --------------------------------------------------------------------------
 rev.6 での変更（rev.5 からの差分）— 残課題B（スルー中の特異点通過）対策・案A
@@ -21,18 +70,15 @@ rev.6 での変更（rev.5 からの差分）— 残課題B（スルー中の特
         そこで本 rev では次を追加する:
 
         (K-1) スルー中の tau_min を SLEW_FC_T_MIN_MIN で監視し、下回ったら
-              「そのスルー経路は特異点を踏む」と判定して即座に中断する
+              「そのスルー経路は特異形態を踏む」と判定して即座に中断する
               （0 になるまで待たない）。
 
         (K-2) 中断したら、もう一方の分枝（a<->b）へ目標を切り替えて
-              スルーをやり直す。sin(a)=sin(pi-a) で joint1 モーメントは同じ
-              だが、回転経路が逆側を通るので特異点を踏まずに届く可能性がある。
+              スルーをやり直す（rev.18では候補が1つしかないため、この
+              リトライは実質発動しない。branch_cand.keys()から動的に
+              残り候補を計算する形に修正したので、KeyErrorにはならない）。
 
-        (K-3) 両分枝とも踏む場合は、その開始形態からの joint1 固定変形は
-              不可能と判定して abort する（残課題として記録）。
-
-[変更L] _pick_gimbal_target が両分枝の値を返すようにし、スルー失敗時に
-        呼び出し側で切り替えられるようにした。
+        (K-3) 候補を使い切った場合は abort する。
 
 --------------------------------------------------------------------------
 継続している変更（rev.5 まで）
@@ -43,18 +89,13 @@ rev.6 での変更（rev.5 からの差分）— 残課題B（スルー中の特
 [修正A/追加C] 固定完了判定、sweep モード。
 
 --------------------------------------------------------------------------
-既知の残課題（rev.6 でも未解決）
+既知の残課題
 --------------------------------------------------------------------------
 残課題A: 目標の joint3 が符号反転すると joint2,3 畳み直しで特異点を踏む。
-         （例: -0.9 0.3 -0.3）。本 rev では未対策。
-
---------------------------------------------------------------------------
-【追加】joint2,3 を同時ではなく joint2 -> joint3 の順に逐次実行するよう変更。
-        joint2 が JOINT23_PHASE_TIMEOUT 秒経っても目標に到達しなければ、
-        joint3 の動作へ移行する。このコメントブロック以外、rev.6からの
-        変更は _step_joint23_servo・__init__の状態変数追加・_gotoの
-        フェーズリセット・定数追加の4箇所のみ。
---------------------------------------------------------------------------
+         （例: -0.9 0.3 -0.3）。未対策。
+既知の制限: controller1停止後もGazebo上でeffortが完全に0にならない
+         ことがある（ros_control/gazebo_ros_controlの仕様上の挙動と
+         推定、研究ノート参照）。
 
 使用例:
   rosrun hydrus_xi hydrus_xi_gimbal_fixed_sequence.py -0.9 0.3 0.3
@@ -71,19 +112,21 @@ from controller_manager_msgs.srv import SwitchController
 
 
 class Step(Enum):
-    INIT              = 0
-    PREP_JOINT23      = 1
-    PREP_STABILIZE    = 2
-    GIMBAL_FIX        = 3
-    GIMBAL_STABILIZE  = 4
-    JOINT1_SERVO      = 5
-    JOINT1_STABILIZE  = 6
-    GIMBAL_RELEASE    = 7
-    JOINT23_SERVO     = 8
-    JOINT23_STABILIZE = 9
-    COMPLETE          = 10
-    SWEEP             = 11
-    JOINT1_TRY1       = 12
+    INIT               = 0
+    PREP_JOINT23       = 1
+    PREP_STABILIZE     = 2
+    GIMBAL_FIX         = 3
+    GIMBAL_STABILIZE   = 4
+    JOINT1_SERVO       = 5
+    JOINT1_STABILIZE   = 6
+    GIMBAL_RELEASE     = 7
+    JOINT23_SERVO      = 8
+    JOINT23_STABILIZE  = 9
+    COMPLETE           = 10
+    SWEEP              = 11
+    JOINT1_TRY1        = 12
+    ASK_TRY1           = 13  # 【rev.18追加】try1を実行するか選択させる待機ステップ
+    ASK_TRY1_DIRECTION = 14  # 【rev.18追加】try1の変形方向(a/b)を選択させる待機ステップ
 
 
 # ---- 実験パラメータ ---------------------------------------------------------
@@ -91,6 +134,8 @@ GIMBAL1_MAG  = 0.3
 GIMBAL1_SIGN = +1.0
 
 # 分枝の強制。None なら nearest から開始し、失敗したら逆枝へ自動リトライ。
+# 【rev.18】_compute_branches/_order_branchesは現在呼ばれていないため、
+#          この定数も実質未使用（過去のロジックを削除せず残しているだけ）。
 GIMBAL1_FORCE_BRANCH = None
 
 # ---- 特異点通過の事前準備 ---------------------------------------------------
@@ -130,16 +175,20 @@ DT = 1.0 / LOOP_FREQ
 
 JOINT1_CONTROLLER = "/hydrus_xi/servo_controller/joints/controller1/simulation"
 
-# ---- 【追加】controller1停止直後にeffortコマンドをゼロに上書きするためのトピック名 ----
+# ---- controller1停止直後にeffortコマンドをゼロに上書きするためのトピック名 ----
 #   ros_control の一般的な仕様として、switch_controller で controller を
 #   stop しても、Gazebo側のeffortコマンドバッファには最後の値が残ったまま
 #   になる（stopは「新しい値を書き込むのをやめる」だけで、バッファの
-#   ゼロクリアは行わない）。これを確認・是正するための1行を追加する。
+#   ゼロクリアは行わない）ことが実測で確認されている。
 JOINT1_CMD_TOPIC = JOINT1_CONTROLLER + "/command"
 # ---------------------------------------------------------------------------
 
-# ---- 【追加】joint2,3 の逐次実行用タイムアウト ------------------------------
+# ---- joint2,3 の逐次実行用タイムアウト --------------------------------------
 JOINT23_PHASE_TIMEOUT = 15.0  # [s] joint2 がこの時間内に到達しなければ joint3 へ移行
+# ---------------------------------------------------------------------------
+
+# ---- 【rev.18追加】gimbal1固定角の新ルールで使う定数 -------------------------
+GIMBAL1_PICK_OFFSET = 0.7  # [rad] pi からのオフセット。a>=0でpi+0.7、a<0でpi-0.7
 # ---------------------------------------------------------------------------
 
 
@@ -177,19 +226,22 @@ class GimbalFixedSequencer(object):
         self.release_hold = 0
         self.psi1_prev = None
 
-        # rev.6 [追加K]: 分枝リトライ用
-        self.branch_cand = {}       # {'a': val, 'b': val}
+        # rev.6 [追加K]: 分枝リトライ用（rev.18では候補は基本1つのみ）
+        self.branch_cand = {}       # {'a': val} など
         self.branch_tried = []      # 試した分枝キー
         self.branch_current = None  # 現在試している分枝キー
         self.slew_start_psi = None  # スルー開始時の psi1（過渡判定用）
 
-        # 【追加】joint2,3 逐次実行用フェーズ（0: joint2, 1: joint3）
+        # 【rev.17追加】joint2,3 逐次実行用フェーズ（0: joint2, 1: joint3）
         self._joint23_phase = 0
         self._joint23_phase_t0 = rospy.Time.now()
 
+        # 【rev.18追加】try1で使うgimbal1目標角（ASK_TRY1_DIRECTIONで設定される）
+        self._try1_gimbal_target = None
+
         self.joints_ctrl_pub = rospy.Publisher('/hydrus_xi/joints_ctrl', JointState, queue_size=1)
         self.fix_cmd_pub     = rospy.Publisher('/hydrus_xi/fixed_gimbal_cmd', Float64MultiArray, queue_size=1)
-        # 【追加】controller1停止直後にeffortコマンドをゼロへ上書きするための Publisher
+        # controller1停止直後にeffortコマンドをゼロへ上書きするための Publisher
         self.joint1_cmd_zero_pub = rospy.Publisher(JOINT1_CMD_TOPIC, Float64, queue_size=1)
 
         self.switch_ctrl = rospy.ServiceProxy(
@@ -293,7 +345,7 @@ class GimbalFixedSequencer(object):
         self.release_hold = 0
         self.psi1_prev = None
         if step == Step.JOINT23_SERVO:
-            # 【追加】joint2,3のステップに入るたびにフェーズを joint2 から再開する
+            # joint2,3のステップに入るたびにフェーズを joint2 から再開する
             self._joint23_phase = 0
             self._joint23_phase_t0 = rospy.Time.now()
 
@@ -340,9 +392,10 @@ class GimbalFixedSequencer(object):
         lo, hi = sorted([self.current_q['joint1'], self.target_q['joint1']])
         return (lo < DANGER) and (hi > -DANGER)
 
-    # ---- rev.6 [変更L]: 両分枝の候補を作る ----
+    # ---- rev.6 [変更L]: 両分枝の候補を作る（rev.18時点では未使用、参考のため残置） ----
     def _compute_branches(self, sign):
         """
+        【rev.18: 現在このメソッドは呼ばれていない】
         sign から a, b の 2 候補を計算して dict で返す。
           a = -MAG*SIGN*sign,  b = pi - a   （sin が等しく joint1 モーメント同一）
         """
@@ -352,6 +405,7 @@ class GimbalFixedSequencer(object):
 
     def _order_branches(self, cand):
         """
+        【rev.18: 現在このメソッドは呼ばれていない】
         試す順序を決める。FORCE 指定があればそれのみ。
         なければ「現在角に近い方」を先に、遠い方を後に。
         """
@@ -361,6 +415,32 @@ class GimbalFixedSequencer(object):
         da = abs(self._norm(cand['a'] - psi_now))
         db = abs(self._norm(cand['b'] - psi_now))
         return ['a', 'b'] if da <= db else ['b', 'a']
+
+    # ---- 【rev.18追加】gimbal1固定角の新ルール ----------------------------
+    def _pick_gimbal1_target(self):
+        """
+        joint1を動かす前に、gimbal1の固定角を以下のルールで1つだけ決める。
+          remainder = 現在のjoint1角度 mod pi(3.14)
+          a = 目標のjoint1角度 - remainder
+          a が正 -> gimbal1 = pi + 0.7
+          a が負 -> gimbal1 = pi - 0.7
+        """
+        remainder = self.current_q['joint1'] % math.pi
+        rospy.loginfo("[Seq] joint1 gimbal-pick: current=%.4f rad, current mod pi = %.4f rad",
+                      self.current_q['joint1'], remainder)
+
+        a = self.target_q['joint1'] - remainder
+        if a >= 0:
+            target = self._norm(math.pi + GIMBAL1_PICK_OFFSET)
+            rospy.loginfo("[Seq] joint1 gimbal-pick: a = target(%.4f) - remainder(%.4f) = %+.4f (>=0) "
+                          "-> gimbal1 = pi + %.1f = %+.3f rad",
+                          self.target_q['joint1'], remainder, a, GIMBAL1_PICK_OFFSET, target)
+        else:
+            target = self._norm(math.pi - GIMBAL1_PICK_OFFSET)
+            rospy.loginfo("[Seq] joint1 gimbal-pick: a = target(%.4f) - remainder(%.4f) = %+.4f (<0) "
+                          "-> gimbal1 = pi - %.1f = %+.3f rad",
+                          self.target_q['joint1'], remainder, a, GIMBAL1_PICK_OFFSET, target)
+        return target
 
     def _check_fc_t_min(self):
         """固定完了後（joint1 変形中）の tau_min ガード"""
@@ -430,12 +510,16 @@ class GimbalFixedSequencer(object):
             self._enter_gimbal_fix(self._diff('joint1'))
 
     def _enter_gimbal_fix(self, d1):
-        """分枝候補を用意し、試す順序を決めてスルー開始"""
-        sign = 1.0 if d1 >= 0.0 else -1.0
-        self.branch_cand = self._compute_branches(sign)
+        """
+        【rev.18変更】gimbal1の固定角を、新ルール（_pick_gimbal1_target）で
+        1つだけ決めてスルー開始する。旧来の2分岐リトライの枠組み
+        （branch_cand/branch_tried/_start_branch）はそのまま流用するが、
+        候補は1つ（キー'a'）のみになる。
+        """
+        target = self._pick_gimbal1_target()
+        self.branch_cand = {'a': target}
         self.branch_tried = []
-        order = self._order_branches(self.branch_cand)
-        self._start_branch(order[0], d1)
+        self._start_branch('a', d1)
 
     def _start_branch(self, key, d1=None):
         """指定分枝でスルーを開始する"""
@@ -443,13 +527,14 @@ class GimbalFixedSequencer(object):
         self.branch_tried.append(key)
         self.gimbal1_cmd = self.branch_cand[key]
         self.slew_start_psi = self.fix_current
-        rospy.loginfo("[Seq] branch '%s': gimbal1 target = %+.3f rad (a=%+.3f b=%+.3f, psi_now=%+.3f)",
-                      key, self.gimbal1_cmd, self.branch_cand['a'], self.branch_cand['b'], self.fix_current)
+        rospy.loginfo("[Seq] branch '%s': gimbal1 target = %+.3f rad (psi_now=%+.3f)",
+                      key, self.gimbal1_cmd, self.fix_current)
         self._goto(Step.GIMBAL_FIX)
 
     def _step_gimbal_fix(self):
         """(2) gimbal1 を固定角へスルー。rev.6: スルー中 tau_min を監視し、
-              谷を踏んだら逆分枝へリトライする。"""
+              谷を踏んだら別候補へリトライする（rev.18では候補が1つのため、
+              実質的にはリトライ先がなくそのままABORTする）。"""
         self._send_joint_cmd()
         self._hold_fix()
 
@@ -463,18 +548,21 @@ class GimbalFixedSequencer(object):
             rospy.logwarn("[Seq] branch '%s' slew hits low tau_min=%.3f at psi1=%+.3f "
                           "(< %.2f). this path crosses singularity.",
                           self.branch_current, self.fc_t_min, self.fix_current, SLEW_FC_T_MIN_MIN)
-            # [追加K-2] 逆分枝を試す
-            remaining = [k for k in ('a', 'b') if k not in self.branch_tried]
+            # [追加K-2] 他に試していない候補があれば切り替える
+            # 【rev.18】候補キーを ('a','b') 固定ではなく branch_cand.keys() から
+            #          動的に求める（候補が1つしかない場合にKeyErrorしないため）。
+            remaining = [k for k in self.branch_cand.keys() if k not in self.branch_tried]
             if remaining:
-                rospy.loginfo("[Seq] retrying with the other branch '%s'", remaining[0])
+                rospy.loginfo("[Seq] retrying with the other candidate '%s'", remaining[0])
                 self._release_fix()   # 一度解放して psi1 を自由に戻す
                 self._start_branch(remaining[0])
                 return
             else:
-                # [追加K-3] 両分枝とも谷 -> この開始形態からは固定変形不能
-                rospy.logerr("[Seq] ABORT: both branches cross singularity during slew "
-                             "(q1_start=%+.3f). gimbal-fixed joint1 deform is infeasible "
-                             "from this near-singular start.", self.current_q['joint1'])
+                # [追加K-3] 候補を使い切った -> この開始形態からは固定変形不能
+                rospy.logerr("[Seq] ABORT: gimbal1 slew crosses singularity and no "
+                             "alternative target remains (q1_start=%+.3f). "
+                             "gimbal-fixed joint1 deform is infeasible from this "
+                             "near-singular start.", self.current_q['joint1'])
                 self._release_fix()
                 self.aborted = True
                 self._goto(Step.COMPLETE)
@@ -579,7 +667,7 @@ class GimbalFixedSequencer(object):
 
     def _step_joint23_servo(self):
         """(7) joint2,3 を最終目標角へ変形（psi1 自由）。
-        【追加】joint2 -> joint3 の順に逐次実行する。joint2 が
+        joint2 -> joint3 の順に逐次実行する。joint2 が
         JOINT23_PHASE_TIMEOUT 秒経っても目標に到達しなければ、
         joint3 の動作へ移行する。"""
         self._release_fix()
@@ -616,48 +704,52 @@ class GimbalFixedSequencer(object):
                 self._goto(Step.JOINT23_STABILIZE)
 
     def _step_joint23_stabilize(self):
-        """(8) 最終静定"""
+        """(8) 最終静定 -> try1を実行するか選択させる"""
         self._send_joint_cmd()
         self._release_fix()
 
         if self._settled(['joint2', 'joint3']):
-            rospy.loginfo("[Seq] all settled")
-            self._goto(Step.JOINT1_TRY1)
+            rospy.loginfo("[Seq] all settled -> ask whether to run joint1_try1")
+            self._goto(Step.ASK_TRY1)
+
+    def _step_ask_try1(self):
+        """
+        【rev.18追加】待機ステップ。実際の「1/2」入力受付はmain()の
+        対話プロンプトで行う。ここではjoint/psi1の状態を保持するだけ。
+        """
+        self._send_joint_cmd()
+        self._release_fix()
+
+    def _step_ask_try1_direction(self):
+        """
+        【rev.18追加】待機ステップ。実際の「a/b」入力受付はmain()の
+        対話プロンプトで行う。ここではjoint/psi1の状態を保持するだけ。
+        """
+        self._send_joint_cmd()
+        self._release_fix()
+
+    def start_try1(self, gimbal_target):
+        """
+        【rev.18追加】main()の対話プロンプトで方向(a/b)が選ばれた際に
+        呼ばれる。gimbal1の目標角を確定し、JOINT1_TRY1へ遷移する。
+        """
+        self._try1_gimbal_target = gimbal_target
+        for attr in ('_try1_reached_t', '_try1_stopped'):
+            if hasattr(self, attr):
+                delattr(self, attr)
+        self._goto(Step.JOINT1_TRY1)
 
     def _step_joint1_try1(self):
-        # ---- 【コメントアウト】gimbal1を1回転させる全周スピン診断を無効化 ----
-        # 問題が多岐にわたり切り分けが難しくなっていたため、まず
-        # 「①controller1停止後にeffortが0になるか」「②推力でjoint1が動くか」
-        # の2点だけを最優先で確認する。スピンは今回のスコープ外として、
-        # 一旦丸ごと無効化し、直接 gimbal_angle=-0.4 へ向かう経路のみ使う。
-        # (元のロジックは削除せず、コメントアウトのみで残してある)
-        #
-        # if not getattr(self, '_spin_done', False):
-        #     # 初回: 現在角から開始
-        #     if not hasattr(self, '_spin_cmd'):
-        #         self._spin_cmd = self.fix_current
-        #         self._spin_travel = 0.0
-        #         rospy.loginfo("[Seq] joint1_try1: start gimbal1 spin from %+.3f (joint1 still held)",
-        #                       self._spin_cmd)
-        #
-        #     # 少しずつ目標角を進める（0.02 rad/loop = 0.4 rad/s @20Hz）
-        #     self._spin_cmd = self._norm(self._spin_cmd + 0.02)
-        #     self._spin_travel += 0.02
-        #     self.gimbal1_cmd = self._spin_cmd
-        #     self._hold_fix()
-        #     self._send_joint_cmd()   # joint は保持したまま
-        #
-        #     # gimbal 角ごとの安定性指標を記録
-        #     rospy.loginfo_throttle(0.25, "[Seq] spin: gimbal=%+.4f fc_t_min=%.3f travel=%.2f/%.2f",
-        #                            self.fix_current, self.fc_t_min,
-        #                            self._spin_travel, 2 * math.pi)
-        #
-        #     if self._spin_travel >= 2 * math.pi:
-        #         rospy.loginfo("[Seq] joint1_try1: spin done (1 revolution)")
-        #         self._spin_done = True
-        #     return
-
-        gimbal_angle = -0.4 # ここを変えれば速さ調整（0に近いほど遅い）角度を増やす方向は-0.4で確定 減らすなら0.35付近
+        """
+        【rev.18変更】全周スピン診断は削除。start_try1()で確定した
+        gimbal1目標角（pi+0.7 または pi-0.7）へ直接向かい、到達・静定後に
+        controller1を停止し、effortゼロのpublishを試みる。
+        """
+        gimbal_angle = self._try1_gimbal_target
+        if gimbal_angle is None:
+            rospy.logerr_throttle(1.0, "[Seq] joint1_try1: _try1_gimbal_target is not set "
+                                  "(start_try1() was not called). aborting this step.")
+            return
 
         # (1) gimbal1 を固定
         self.gimbal1_cmd = gimbal_angle
@@ -689,11 +781,10 @@ class GimbalFixedSequencer(object):
             rospy.loginfo("[Seq] joint1_try1: settled, controller1 stopped")
             self._try1_stopped = True
 
-            # 【追加】controller1停止直後、commandトピックへeffort=0を
-            # 1回publishする。ros_controlの仕様上、stopしただけでは
-            # Gazebo側のeffortコマンドバッファに最後の値が残り続ける
-            # ことが確認されている（rostopic echoで実測済み）。
-            # これが実際にeffortを0にするかどうかを確認する。
+            # controller1停止直後、commandトピックへeffort=0を1回publishする。
+            # ros_controlの仕様上、stopしただけではGazebo側のeffortコマンド
+            # バッファに最後の値が残り続けることが確認されている
+            # （研究ノート16.4節参照）。
             self.joint1_cmd_zero_pub.publish(Float64(0.0))
             rospy.loginfo("[Seq] joint1_try1: published effort=0.0 to %s", JOINT1_CMD_TOPIC)
         # 以降このステップに留まり、_send_joint_cmd() を呼ばない。
@@ -738,19 +829,21 @@ class GimbalFixedSequencer(object):
                 self.step_t0 = rospy.Time.now()
 
             {
-                Step.INIT:              self._step_init,
-                Step.PREP_JOINT23:      self._step_prep_joint23,
-                Step.PREP_STABILIZE:    self._step_prep_stabilize,
-                Step.GIMBAL_FIX:        self._step_gimbal_fix,
-                Step.GIMBAL_STABILIZE:  self._step_gimbal_stabilize,
-                Step.JOINT1_SERVO:      self._step_joint1_servo,
-                Step.JOINT1_STABILIZE:  self._step_joint1_stabilize,
-                Step.GIMBAL_RELEASE:    self._step_gimbal_release,
-                Step.JOINT23_SERVO:     self._step_joint23_servo,
-                Step.JOINT23_STABILIZE: self._step_joint23_stabilize,
-                Step.COMPLETE:          self._step_complete,
-                Step.SWEEP:             self._step_sweep,
-                Step.JOINT1_TRY1:       self._step_joint1_try1,
+                Step.INIT:               self._step_init,
+                Step.PREP_JOINT23:       self._step_prep_joint23,
+                Step.PREP_STABILIZE:     self._step_prep_stabilize,
+                Step.GIMBAL_FIX:         self._step_gimbal_fix,
+                Step.GIMBAL_STABILIZE:   self._step_gimbal_stabilize,
+                Step.JOINT1_SERVO:       self._step_joint1_servo,
+                Step.JOINT1_STABILIZE:   self._step_joint1_stabilize,
+                Step.GIMBAL_RELEASE:     self._step_gimbal_release,
+                Step.JOINT23_SERVO:      self._step_joint23_servo,
+                Step.JOINT23_STABILIZE:  self._step_joint23_stabilize,
+                Step.COMPLETE:           self._step_complete,
+                Step.SWEEP:              self._step_sweep,
+                Step.JOINT1_TRY1:        self._step_joint1_try1,
+                Step.ASK_TRY1:           self._step_ask_try1,
+                Step.ASK_TRY1_DIRECTION: self._step_ask_try1_direction,
             }[self.step]()
         except Exception as e:
             rospy.logerr("[Seq] loop error: %s", str(e))
@@ -805,6 +898,50 @@ def main():
                     seq.new_target(*v)
             except (ValueError, KeyboardInterrupt, EOFError):
                 break
+
+        elif seq.step == Step.ASK_TRY1:
+            print("\n" + "=" * 56)
+            print(" joint1_try1 を実行しますか？")
+            print(" 1: 実行する")
+            print(" 2: スキップする")
+            print("=" * 56)
+            try:
+                s = input("> ").strip()
+            except (KeyboardInterrupt, EOFError):
+                break
+            if s == '1':
+                seq._goto(Step.ASK_TRY1_DIRECTION)
+            elif s == '2':
+                rospy.loginfo("[Seq] joint1_try1 skipped by user")
+                seq._goto(Step.COMPLETE)
+            else:
+                print("'1' か '2' を入力してください")
+
+        elif seq.step == Step.ASK_TRY1_DIRECTION:
+            print("\n変形方向は？")
+            print(" a: gimbal1 = pi + %.1f rad に固定" % GIMBAL1_PICK_OFFSET)
+            print(" b: gimbal1 = pi - %.1f rad に固定" % GIMBAL1_PICK_OFFSET)
+            try:
+                s = input("> ").strip().lower()
+            except (KeyboardInterrupt, EOFError):
+                break
+            if s == 'a':
+                target = seq._norm(math.pi + GIMBAL1_PICK_OFFSET)
+                msg = "[Seq] try1: direction 'a' selected -> gimbal1 = pi + %.1f = %+.3f rad" % (
+                    GIMBAL1_PICK_OFFSET, target)
+                print(msg)
+                rospy.loginfo(msg)
+                seq.start_try1(target)
+            elif s == 'b':
+                target = seq._norm(math.pi - GIMBAL1_PICK_OFFSET)
+                msg = "[Seq] try1: direction 'b' selected -> gimbal1 = pi - %.1f = %+.3f rad" % (
+                    GIMBAL1_PICK_OFFSET, target)
+                print(msg)
+                rospy.loginfo(msg)
+                seq.start_try1(target)
+            else:
+                print("'a' か 'b' を入力してください")
+
         else:
             rate.sleep()
 
