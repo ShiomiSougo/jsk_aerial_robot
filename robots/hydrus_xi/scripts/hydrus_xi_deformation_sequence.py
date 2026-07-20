@@ -2,10 +2,26 @@
 # -*- coding: utf-8 -*-
 
 """
-Hydrus-Xi 変形シーケンス（gimbal1 固定・joint1 サーボ駆動版）rev.20
+Hydrus-Xi 変形シーケンス（gimbal1 固定・joint1 サーボ駆動版）rev.22
 
 目的:
   psi_1 (gimbal1 の vectoring 角) を固定したまま joint1 の変形を成立させる。
+
+--------------------------------------------------------------------------
+rev.22 での変更（rev.21 からの差分）— controller1停止時のeffortゼロ化を強化
+--------------------------------------------------------------------------
+【背景】単発のeffort=0 publishでは、Gazebo側のeffortコマンドバッファが
+  必ずしも上書きされないことが実験で確認されていた（研究ノート16.4節）。
+  GitHub Copilotによる分析: ros_control/gazebo_ros_controlは、
+  controllerをstopしてもバッファを自動でクリアしないため、1回だけの
+  publishは受信タイミングによって取りこぼすことがある。
+
+【対策】_step_joint1_try1のcontroller1停止処理を、以下のように変更した。
+  - 停止の直前に、effort=0を20回、10ms間隔でpublish
+  - switch_ctrlでcontroller1を停止
+  - 停止の直後にも、effort=0を20回、10ms間隔でpublish
+  合計40回・約0.4秒のブロッキングを伴うが、この処理はシーケンス全体で
+  1回きりなので実害は小さいと判断した。
 
 --------------------------------------------------------------------------
 rev.20 での変更（rev.19 からの差分）— joint1変形前のgimbal1選択の符号修正
@@ -230,6 +246,12 @@ JOINT1_CONTROLLER = "/hydrus_xi/servo_controller/joints/controller1/simulation"
 #   になる（stopは「新しい値を書き込むのをやめる」だけで、バッファの
 #   ゼロクリアは行わない）ことが実測で確認されている。
 JOINT1_CMD_TOPIC = JOINT1_CONTROLLER + "/command"
+# ---------------------------------------------------------------------------
+
+# ---- 【rev.22追加、rev.23で回数調整】controller1停止前後のゼロpublish回数 ---
+#   基準の25回に、念のため安全マージンを乗せて35回とした。
+JOINT1_ZERO_PUBLISH_COUNT = 35     # [回] 停止前・停止後それぞれで送る回数
+JOINT1_ZERO_PUBLISH_INTERVAL = 0.01  # [s] publishの間隔（10ms）
 # ---------------------------------------------------------------------------
 
 # ---- joint2,3 の逐次実行用タイムアウト --------------------------------------
@@ -868,18 +890,37 @@ class GimbalFixedSequencer(object):
 
         # (3) 安定したら joint1 のサーボを切る（1回だけ）
         if not getattr(self, '_try1_stopped', False):
+            # 【rev.22追加、rev.23で回数調整】GitHub Copilotの分析を踏まえた対策。
+            # ros_control/gazebo_ros_controlは、controllerをstopしても
+            # Gazebo側のeffortコマンドバッファを自動でクリアしない
+            # （最後に書き込まれた値が残り続ける）。1回のpublishだと
+            # 受信タイミングによって取りこぼすことがあるため、停止の
+            # 前後でそれぞれ複数回、10ms間隔でeffort=0を送り、バッファを
+            # 確実に上書きする。
+            #
+            # 回数は基準の25回に、念のため安全マージンを乗せて
+            # JOINT1_ZERO_PUBLISH_COUNT=35回とした（追加コストは
+            # 10ms×35×2≈0.7秒、停止処理はシーケンス全体で1回きりなので
+            # 実害は小さいと判断）。
+            #
+            # 注意: このブロックは20Hzのタイマーコールバック内で
+            # 約0.7秒ブロックする。停止処理はシーケンス全体で1回きり
+            # なので実害は小さいと判断し、そのまま実装する。
+            for _ in range(JOINT1_ZERO_PUBLISH_COUNT):
+                self.joint1_cmd_zero_pub.publish(Float64(0.0))
+                rospy.sleep(JOINT1_ZERO_PUBLISH_INTERVAL)
+
             self.switch_ctrl(start_controllers=[],
                              stop_controllers=[JOINT1_CONTROLLER],
                              strictness=1)
             rospy.loginfo("[Seq] joint1_try1: settled, controller1 stopped")
             self._try1_stopped = True
 
-            # controller1停止直後、commandトピックへeffort=0を1回publishする。
-            # ros_controlの仕様上、stopしただけではGazebo側のeffortコマンド
-            # バッファに最後の値が残り続けることが確認されている
-            # （研究ノート16.4節参照）。
-            self.joint1_cmd_zero_pub.publish(Float64(0.0))
-            rospy.loginfo("[Seq] joint1_try1: published effort=0.0 to %s", JOINT1_CMD_TOPIC)
+            for _ in range(JOINT1_ZERO_PUBLISH_COUNT):
+                self.joint1_cmd_zero_pub.publish(Float64(0.0))
+                rospy.sleep(JOINT1_ZERO_PUBLISH_INTERVAL)
+            rospy.loginfo("[Seq] joint1_try1: published effort=0.0 x%d(before) + x%d(after) to %s",
+                          JOINT1_ZERO_PUBLISH_COUNT, JOINT1_ZERO_PUBLISH_COUNT, JOINT1_CMD_TOPIC)
         # 以降このステップに留まり、_send_joint_cmd() を呼ばない。
 
     def _step_complete(self):
