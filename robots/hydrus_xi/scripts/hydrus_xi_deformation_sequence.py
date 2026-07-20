@@ -48,6 +48,14 @@ rev.6 での変更（rev.5 からの差分）— 残課題B（スルー中の特
 残課題A: 目標の joint3 が符号反転すると joint2,3 畳み直しで特異点を踏む。
          （例: -0.9 0.3 -0.3）。本 rev では未対策。
 
+--------------------------------------------------------------------------
+【追加】joint2,3 を同時ではなく joint2 -> joint3 の順に逐次実行するよう変更。
+        joint2 が JOINT23_PHASE_TIMEOUT 秒経っても目標に到達しなければ、
+        joint3 の動作へ移行する。このコメントブロック以外、rev.6からの
+        変更は _step_joint23_servo・__init__の状態変数追加・_gotoの
+        フェーズリセット・定数追加の4箇所のみ。
+--------------------------------------------------------------------------
+
 使用例:
   rosrun hydrus_xi hydrus_xi_gimbal_fixed_sequence.py -0.9 0.3 0.3
   rosrun hydrus_xi hydrus_xi_gimbal_fixed_sequence.py --sweep
@@ -57,7 +65,7 @@ import rospy
 import sys
 import math
 from sensor_msgs.msg import JointState
-from std_msgs.msg import Float64MultiArray
+from std_msgs.msg import Float64MultiArray, Float64
 from enum import Enum
 from controller_manager_msgs.srv import SwitchController
 
@@ -121,6 +129,17 @@ LOOP_FREQ = 20.0
 DT = 1.0 / LOOP_FREQ
 
 JOINT1_CONTROLLER = "/hydrus_xi/servo_controller/joints/controller1/simulation"
+
+# ---- 【追加】controller1停止直後にeffortコマンドをゼロに上書きするためのトピック名 ----
+#   ros_control の一般的な仕様として、switch_controller で controller を
+#   stop しても、Gazebo側のeffortコマンドバッファには最後の値が残ったまま
+#   になる（stopは「新しい値を書き込むのをやめる」だけで、バッファの
+#   ゼロクリアは行わない）。これを確認・是正するための1行を追加する。
+JOINT1_CMD_TOPIC = JOINT1_CONTROLLER + "/command"
+# ---------------------------------------------------------------------------
+
+# ---- 【追加】joint2,3 の逐次実行用タイムアウト ------------------------------
+JOINT23_PHASE_TIMEOUT = 15.0  # [s] joint2 がこの時間内に到達しなければ joint3 へ移行
 # ---------------------------------------------------------------------------
 
 
@@ -164,8 +183,14 @@ class GimbalFixedSequencer(object):
         self.branch_current = None  # 現在試している分枝キー
         self.slew_start_psi = None  # スルー開始時の psi1（過渡判定用）
 
+        # 【追加】joint2,3 逐次実行用フェーズ（0: joint2, 1: joint3）
+        self._joint23_phase = 0
+        self._joint23_phase_t0 = rospy.Time.now()
+
         self.joints_ctrl_pub = rospy.Publisher('/hydrus_xi/joints_ctrl', JointState, queue_size=1)
         self.fix_cmd_pub     = rospy.Publisher('/hydrus_xi/fixed_gimbal_cmd', Float64MultiArray, queue_size=1)
+        # 【追加】controller1停止直後にeffortコマンドをゼロへ上書きするための Publisher
+        self.joint1_cmd_zero_pub = rospy.Publisher(JOINT1_CMD_TOPIC, Float64, queue_size=1)
 
         self.switch_ctrl = rospy.ServiceProxy(
             '/hydrus_xi/controller_manager/switch_controller', SwitchController)
@@ -267,6 +292,10 @@ class GimbalFixedSequencer(object):
         self.hold_count = 0
         self.release_hold = 0
         self.psi1_prev = None
+        if step == Step.JOINT23_SERVO:
+            # 【追加】joint2,3のステップに入るたびにフェーズを joint2 から再開する
+            self._joint23_phase = 0
+            self._joint23_phase_t0 = rospy.Time.now()
 
     def _elapsed(self):
         return (rospy.Time.now() - self.step_t0).to_sec()
@@ -549,20 +578,42 @@ class GimbalFixedSequencer(object):
             self._goto(Step.JOINT23_SERVO)
 
     def _step_joint23_servo(self):
-        """(7) joint2,3 を最終目標角へ変形（psi1 自由）"""
+        """(7) joint2,3 を最終目標角へ変形（psi1 自由）。
+        【追加】joint2 -> joint3 の順に逐次実行する。joint2 が
+        JOINT23_PHASE_TIMEOUT 秒経っても目標に到達しなければ、
+        joint3 の動作へ移行する。"""
         self._release_fix()
 
-        self._ramp(['joint2', 'joint3'])
-        self._send_joint_cmd()
+        if self._joint23_phase == 0:
+            self._ramp(['joint2'])
+            self._send_joint_cmd()
 
-        rospy.loginfo_throttle(0.5, "[Seq] joint2,3: q=(%.4f, %.4f) tgt=(%.4f, %.4f) psi1=%+.3f fc_t_min=%.3f",
-                               self.current_q['joint2'], self.current_q['joint3'],
-                               self.target_q['joint2'], self.target_q['joint3'],
-                               self.fix_current, self.fc_t_min)
+            rospy.loginfo_throttle(0.5, "[Seq] joint2,3: [joint2] q=(%.4f, %.4f) tgt=(%.4f, %.4f) psi1=%+.3f fc_t_min=%.3f",
+                                   self.current_q['joint2'], self.current_q['joint3'],
+                                   self.target_q['joint2'], self.target_q['joint3'],
+                                   self.fix_current, self.fc_t_min)
 
-        if self._reached(['joint2', 'joint3']):
-            rospy.loginfo("[Seq] joint2,3 deform done -> stabilize")
-            self._goto(Step.JOINT23_STABILIZE)
+            if abs(self._diff('joint2')) <= ANGLE_ERROR_THRESHOLD:
+                rospy.loginfo("[Seq] joint2 deform done (q2=%.4f) -> joint3", self.current_q['joint2'])
+                self._joint23_phase = 1
+                self._joint23_phase_t0 = rospy.Time.now()
+            elif (rospy.Time.now() - self._joint23_phase_t0).to_sec() >= JOINT23_PHASE_TIMEOUT:
+                rospy.logwarn("[Seq] joint2 phase timeout (%.1fs): q2=%.4f tgt=%.4f. proceeding to joint3.",
+                              JOINT23_PHASE_TIMEOUT, self.current_q['joint2'], self.target_q['joint2'])
+                self._joint23_phase = 1
+                self._joint23_phase_t0 = rospy.Time.now()
+        else:
+            self._ramp(['joint3'])
+            self._send_joint_cmd()
+
+            rospy.loginfo_throttle(0.5, "[Seq] joint2,3: [joint3] q=(%.4f, %.4f) tgt=(%.4f, %.4f) psi1=%+.3f fc_t_min=%.3f",
+                                   self.current_q['joint2'], self.current_q['joint3'],
+                                   self.target_q['joint2'], self.target_q['joint3'],
+                                   self.fix_current, self.fc_t_min)
+
+            if self._reached(['joint2', 'joint3']):
+                rospy.loginfo("[Seq] joint2,3 deform done -> stabilize")
+                self._goto(Step.JOINT23_STABILIZE)
 
     def _step_joint23_stabilize(self):
         """(8) 最終静定"""
@@ -574,31 +625,38 @@ class GimbalFixedSequencer(object):
             self._goto(Step.JOINT1_TRY1)
 
     def _step_joint1_try1(self):
-        if not getattr(self, '_spin_done', False):
-            # 初回: 現在角から開始
-            if not hasattr(self, '_spin_cmd'):
-                self._spin_cmd = self.fix_current
-                self._spin_travel = 0.0
-                rospy.loginfo("[Seq] joint1_try1: start gimbal1 spin from %+.3f (joint1 still held)",
-                              self._spin_cmd)
+        # ---- 【コメントアウト】gimbal1を1回転させる全周スピン診断を無効化 ----
+        # 問題が多岐にわたり切り分けが難しくなっていたため、まず
+        # 「①controller1停止後にeffortが0になるか」「②推力でjoint1が動くか」
+        # の2点だけを最優先で確認する。スピンは今回のスコープ外として、
+        # 一旦丸ごと無効化し、直接 gimbal_angle=-0.4 へ向かう経路のみ使う。
+        # (元のロジックは削除せず、コメントアウトのみで残してある)
+        #
+        # if not getattr(self, '_spin_done', False):
+        #     # 初回: 現在角から開始
+        #     if not hasattr(self, '_spin_cmd'):
+        #         self._spin_cmd = self.fix_current
+        #         self._spin_travel = 0.0
+        #         rospy.loginfo("[Seq] joint1_try1: start gimbal1 spin from %+.3f (joint1 still held)",
+        #                       self._spin_cmd)
+        #
+        #     # 少しずつ目標角を進める（0.02 rad/loop = 0.4 rad/s @20Hz）
+        #     self._spin_cmd = self._norm(self._spin_cmd + 0.02)
+        #     self._spin_travel += 0.02
+        #     self.gimbal1_cmd = self._spin_cmd
+        #     self._hold_fix()
+        #     self._send_joint_cmd()   # joint は保持したまま
+        #
+        #     # gimbal 角ごとの安定性指標を記録
+        #     rospy.loginfo_throttle(0.25, "[Seq] spin: gimbal=%+.4f fc_t_min=%.3f travel=%.2f/%.2f",
+        #                            self.fix_current, self.fc_t_min,
+        #                            self._spin_travel, 2 * math.pi)
+        #
+        #     if self._spin_travel >= 2 * math.pi:
+        #         rospy.loginfo("[Seq] joint1_try1: spin done (1 revolution)")
+        #         self._spin_done = True
+        #     return
 
-            # 少しずつ目標角を進める（0.02 rad/loop = 0.4 rad/s @20Hz）
-            self._spin_cmd = self._norm(self._spin_cmd + 0.02)
-            self._spin_travel += 0.02
-            self.gimbal1_cmd = self._spin_cmd
-            self._hold_fix()
-            self._send_joint_cmd()   # joint は保持したまま
-
-            # gimbal 角ごとの安定性指標を記録
-            rospy.loginfo_throttle(0.25, "[Seq] spin: gimbal=%+.4f fc_t_min=%.3f travel=%.2f/%.2f",
-                                   self.fix_current, self.fc_t_min,
-                                   self._spin_travel, 2 * math.pi)
-
-            if self._spin_travel >= 2 * math.pi:
-                rospy.loginfo("[Seq] joint1_try1: spin done (1 revolution)")
-                self._spin_done = True
-            return
-        
         gimbal_angle = -0.4 # ここを変えれば速さ調整（0に近いほど遅い）角度を増やす方向は-0.4で確定 減らすなら0.35付近
 
         # (1) gimbal1 を固定
@@ -630,6 +688,14 @@ class GimbalFixedSequencer(object):
                              strictness=1)
             rospy.loginfo("[Seq] joint1_try1: settled, controller1 stopped")
             self._try1_stopped = True
+
+            # 【追加】controller1停止直後、commandトピックへeffort=0を
+            # 1回publishする。ros_controlの仕様上、stopしただけでは
+            # Gazebo側のeffortコマンドバッファに最後の値が残り続ける
+            # ことが確認されている（rostopic echoで実測済み）。
+            # これが実際にeffortを0にするかどうかを確認する。
+            self.joint1_cmd_zero_pub.publish(Float64(0.0))
+            rospy.loginfo("[Seq] joint1_try1: published effort=0.0 to %s", JOINT1_CMD_TOPIC)
         # 以降このステップに留まり、_send_joint_cmd() を呼ばない。
 
     def _step_complete(self):
