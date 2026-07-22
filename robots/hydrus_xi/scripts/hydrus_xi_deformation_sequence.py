@@ -2,35 +2,59 @@
 # -*- coding: utf-8 -*-
 
 """
-Hydrus-Xi 変形シーケンス（gimbal1 固定・joint1 サーボ駆動版）rev.29
+Hydrus-Xi 変形シーケンス（gimbal1 固定・joint1 サーボ駆動版）rev.30
 
 目的:
   psi_1 (gimbal1 の vectoring 角) を固定したまま joint1 の変形を成立させる。
 
 --------------------------------------------------------------------------
-rev.29 での変更（rev.28 からの差分）— θスイープ表示をarcsinによる逆算に変更
+rev.30 での変更（rev.29 からの差分）— 釣り合い角モード'c'の追加
 --------------------------------------------------------------------------
-【背景】rev.28まではθ=0~pi/2を離散的に振って推力モーメント・反モーメントを
-  一覧表示し、目視でつり合い点を探す方式だった。これを、つり合い条件
-    推力モーメント(θ) = 反モーメント
-    thrust * LINK_LENGTH * sin(BETA) * sin(θ) = GIMBAL1_MF_RATE * thrust * cos(BETA)
-  を θ について直接解く方式に変更する。
+【背景】推力モーメント(θ) = 反モーメント となるθを解析的に解いたところ、
 
-  sin(θ) = (GIMBAL1_MF_RATE * cos(BETA)) / (LINK_LENGTH * sin(BETA))
-         ※ thrust は両辺に共通のため約分され、つり合い角θはthrustに
-           依存しない定数になる。
+    sin(theta_balance) = GIMBAL1_MF_RATE * cos(BETA) / (LINK_LENGTH * sin(BETA))
 
-【対策】上式の右辺（sin_theta_targetと呼ぶ）を計算し、
-  -1 <= sin_theta_target <= 1 の場合のみ arcsin で解を求める。
-  arcsin の主値域は [-pi/2, pi/2] であり、sin_theta_target >= 0 の場合は
-  主値がそのまま [0, pi/2] に収まるため、0~pi/2の範囲内かどうかの判定は
-  「sin_theta_targetが[0,1]に収まっているか」の確認のみでよい。
-  範囲外（sin_theta_targetが1を超える、または負の場合）は
-  「0~pi/2の範囲内に解が存在しない」旨を表示する。
+  という式が得られ、両辺のlambda1（推力）が約分されるため、
+  theta_balance は推力の大きさに依存しない定数（機体形状とプロペラ
+  特性だけで決まる）であることが分かった。実測構成では
+  theta_balance ≈ 0.0835 rad（≈4.78deg）となる。
 
-  この計算はthrustに依存しないため、rev.28のような3秒間のサンプリングは
-  不要になった。ただし推力λ1自体は今後の反トルク補償等でも使うため、
-  表示用としてサンプリング処理はそのまま残す。
+  この角度にgimbal1を固定すれば、joint1にかかる正味のモーメントが
+  ほぼゼロになり、joint1の「予測可能な初期位置」を作れると期待される
+  （ただし関節摩擦がゼロではないため、完全な静止ではなく緩やかな
+  収束とみなす）。
+
+【対策】既存のtry1（方向選択 a/b）に、この理論値を使う選択肢
+  direction='c' を追加した。a, bの既存ロジック（_pick_try1_target内の
+  if/elif、および_step_joint1_try1のgimbal固定→静定→effortゼロ化の
+  流れ）は一切変更せず、'c'の分岐だけを追加している。
+
+  main()のASK_TRY1_DIRECTION処理でも、'a','b'と全く同じ構造で
+  'c'を追加した。'c'選択時は、計算したtarget角度をprintfした後、
+  3秒間待ってから、a, bと同じ start_try1() の流れ（gimbal1固定への
+  スルー→静定待ち→controller1停止→effortゼロpublish）に入る。
+
+  定数 THETA_BALANCE は math.asin() を用いて起動時に自動計算される
+  （リテラル値のハードコードではなく、BETA, LINK_LENGTH,
+  GIMBAL1_MF_RATE から導出される）。
+
+--------------------------------------------------------------------------
+rev.29 での変更（rev.28 からの差分）— 釣り合いテーブルのNameError修正・探索範囲拡張
+--------------------------------------------------------------------------
+【背景】rev.28で追加した_print_moment_balance_table()が、モジュール
+  レベル定数THETA_SWEEP_STEPSを参照していたが、実行環境側のファイルで
+  NameError: name 'THETA_SWEEP_STEPS' is not defined が発生した。
+
+【対策】THETA_SWEEP_STEPSへの依存をやめ、_print_moment_balance_table()
+  メソッド内のローカル変数 n_steps（=36、5deg刻み相当）とすることで、
+  メソッド単体で完結させ、外部定数の定義漏れによる影響を受けないよう
+  にした。また探索範囲を 0~pi/2 から -pi/2~+pi/2 に拡張した。
+
+  この修正の結果、実際に得られた出力（thrust≈9.2493N平均時）は
+  theta=0degで推力モーメント=0Nm・反モーメント≈0.1582Nm、
+  theta=5degで推力モーメント≈0.1654Nm・反モーメント≈0.1582Nmとなり、
+  0~5degの間で両者の大小が入れ替わることが確認された（rev.30の
+  理論値 theta_balance≈4.78deg と整合）。
 
 --------------------------------------------------------------------------
 rev.28 での変更（rev.27 からの差分）— 推力モーメント・反モーメントをθ=0~π/2で一覧表示
@@ -424,6 +448,16 @@ LINK_LENGTH = 0.6          # [m] link_length
 GIMBAL1_MF_RATE = 0.0182   # [Nm/N] m_f_rate（Hydrus-Xi, MN4010KV475_Afro_15inch）
 REACTION_MOMENT_DISPLAY_DURATION = 3.0   # [s] 推力λ1をサンプリングし平均する時間（表示用、rev.29時点で釣り合い角計算には不使用）
 REACTION_MOMENT_DISPLAY_INTERVAL = 0.1   # [s] サンプリング間隔
+
+# ---- 【rev.30追加】推力モーメントと反モーメントの釣り合い角 theta_balance -------
+#   推力モーメント(θ) = 反モーメント となる θ を解析的に解く:
+#     lambda1 * LINK_LENGTH * sin(BETA) * sin(theta) = GIMBAL1_MF_RATE * lambda1 * cos(BETA)
+#     sin(theta) = GIMBAL1_MF_RATE * cos(BETA) / (LINK_LENGTH * sin(BETA))
+#   両辺の lambda1（推力）が約分されるため、theta_balance は推力の大きさに
+#   依存しない（機体形状とプロペラ特性だけで決まる）定数になる。
+#   実測では約 0.0835 rad (約4.78deg) となることを確認済み。
+THETA_BALANCE = math.asin(GIMBAL1_MF_RATE * math.cos(BETA) / (LINK_LENGTH * math.sin(BETA)))
+# ---------------------------------------------------------------------------
 # ---------------------------------------------------------------------------
 
 
@@ -742,7 +776,8 @@ class GimbalFixedSequencer(object):
                           self.target_q['joint1'], remainder, a, GIMBAL1_PICK_OFFSET, target)
         return target
 
-    # ---- 【rev.19追加、rev.24で周期をpi->2piに修正】try1用: 現在のgimbal1角度を基準にした目標角の決定 -------
+    # ---- 【rev.19追加、rev.24で周期をpi->2piに修正、rev.30でdirection='c'追加】
+    #      try1用: 現在のgimbal1角度を基準にした目標角の決定 -------
     def _pick_try1_target(self, direction):
         """
         try1でgimbal1を固定する目標角を、現在のgimbal1角度(self.fix_current)
@@ -763,8 +798,16 @@ class GimbalFixedSequencer(object):
 
           b = 現在のgimbal1角度 (self.fix_current)
           b ÷ (2*pi) の商を c、余りを d とする (b = c*2*pi + d)
-          direction='a' -> target = c*2*pi + pi + 0.7
-          direction='b' -> target = c*2*pi + pi - 0.7
+          direction='a' -> target = c*2*pi + pi + GIMBAL1_PICK_OFFSET(0.7)
+          direction='b' -> target = c*2*pi + pi - GIMBAL1_PICK_OFFSET(0.7)
+
+        【rev.30追加】direction='c' を追加した。これは推力モーメントと
+        反モーメントの理論的な釣り合い角 THETA_BALANCE（約0.0835 rad、
+        約4.78deg）を使う点だけが 'a' と異なり、オフセットの符号（+）は
+        'a' と同じ（正の向き）。a/bの既存の分岐・計算式は一切変更して
+        いない。
+
+          direction='c' -> target = c*2*pi + pi + THETA_BALANCE(約0.0835)
 
         戻り値: (target, c, d) のタプル。b, c, d, target はすべて呼び出し
         元で表示する（今回の変更の目的そのものであるため）。
@@ -776,8 +819,10 @@ class GimbalFixedSequencer(object):
             target = self._norm(c * 2 * math.pi + math.pi + GIMBAL1_PICK_OFFSET)
         elif direction == 'b':
             target = self._norm(c * 2 * math.pi + math.pi - GIMBAL1_PICK_OFFSET)
+        elif direction == 'c':
+            target = self._norm(c * 2 * math.pi + math.pi + THETA_BALANCE)
         else:
-            raise ValueError("direction must be 'a' or 'b', got %r" % direction)
+            raise ValueError("direction must be 'a', 'b' or 'c', got %r" % direction)
 
         rospy.loginfo("[Seq] try1 gimbal-pick: b(current gimbal1)=%.4f, "
                       "b/(2*pi) -> c=%.1f, d(remainder)=%.4f (b = c*2*pi + d)",
@@ -1285,9 +1330,13 @@ def main():
             print("\n変形方向は？")
             print(" a(正の向き): gimbal1 = c*2*pi + pi + %.1f rad に固定（cは現在角basis）" % GIMBAL1_PICK_OFFSET)
             print(" b(負の向き): gimbal1 = c*2*pi + pi - %.1f rad に固定（cは現在角basis）" % GIMBAL1_PICK_OFFSET)
+            # 【rev.30追加】推力モーメント=反モーメントの理論的な釣り合い角
+            print(" c(釣り合い位置): gimbal1 = c*2*pi + pi + %.4f rad (%.2f deg) に固定"
+                  " （推力モーメント=反モーメントの理論値、cは現在角basis）"
+                  % (THETA_BALANCE, math.degrees(THETA_BALANCE)))
 
             # 【rev.28】gimbal1推力λ1を約3秒間サンプリングして平均を取り、
-            # その平均推力を使って、θ(gimbal1のオフセット角)=0~pi/2の
+            # その平均推力を使って、θ(gimbal1のオフセット角)=-pi/2~pi/2の
             # 推力モーメント・反モーメント一覧テーブルを表示する。
             # 反モーメントはjoint1の角度を減らす方向にはたらく前提。
             print(" [debug] gimbal1推力を %.0f 秒間サンプリングします..."
@@ -1329,8 +1378,29 @@ def main():
                 print(msg)
                 rospy.loginfo(msg)
                 seq.start_try1(target)
+            elif s == 'c':
+                # 【rev.30追加】a, bとできる限り同じ構造にする。
+                # 唯一の違いは _pick_try1_target に渡す direction が 'c'
+                # （オフセットが GIMBAL1_PICK_OFFSET ではなく THETA_BALANCE）
+                # という点のみ。
+                target, c, d = seq._pick_try1_target('c')
+                msg = ("[Seq] try1: direction 'c' (balance) selected -> b(current)=%.4f, c=%.1f, d=%.4f, "
+                       "target = c*2*pi + pi + %.4f = %+.3f rad" % (seq.fix_current, c, d, THETA_BALANCE, target))
+                print(msg)
+                rospy.loginfo(msg)
+
+                # gimbal1をtargetへ固定した目標角度をprintfし、3秒間待つ。
+                # 実際のgimbal1のスルー・静定・effortゼロ化はa, bと全く同じ
+                # start_try1() -> Step.JOINT1_TRY1 の流れ（_step_joint1_try1）
+                # に任せる。
+                print(" [debug] gimbal1 target = %+.4f rad (%.2f deg) を3秒間待ちます..."
+                      % (target, math.degrees(target)))
+                for _ in range(int(REACTION_MOMENT_DISPLAY_DURATION / REACTION_MOMENT_DISPLAY_INTERVAL)):
+                    rospy.sleep(REACTION_MOMENT_DISPLAY_INTERVAL)
+
+                seq.start_try1(target)
             else:
-                print("'a' か 'b' を入力してください")
+                print("'a' か 'b' か 'c' を入力してください")
 
         else:
             rate.sleep()
