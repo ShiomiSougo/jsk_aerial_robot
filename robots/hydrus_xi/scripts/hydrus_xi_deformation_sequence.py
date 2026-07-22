@@ -2,10 +2,33 @@
 # -*- coding: utf-8 -*-
 
 """
-Hydrus-Xi 変形シーケンス（gimbal1 固定・joint1 サーボ駆動版）rev.25
+Hydrus-Xi 変形シーケンス（gimbal1 固定・joint1 サーボ駆動版）rev.26
 
 目的:
   psi_1 (gimbal1 の vectoring 角) を固定したまま joint1 の変形を成立させる。
+
+--------------------------------------------------------------------------
+rev.26 での変更（rev.25 からの差分）— gimbal1推力(λ1)のsubscribe・表示を追加
+--------------------------------------------------------------------------
+【背景】joint1にかかる反トルク（プロペラ回転によるモーメント、
+  moment/force rate × λ1）をPython側で計算するために、gimbal1
+  （固定対象ロータ）の静的推力λ1が必要になった。しかしλ1はC++側
+  （HydrusXiUnderActuatedNavigator::plan()）でのみ計算されており、
+  Python側へは一切publishされていなかった。
+
+【対策】C++側（hydrus_xi_under_actuated_navigation.cpp/h）に
+  fixed_gimbal_thrust トピック（std_msgs/Float64、gimbal1の静的推力
+  λ1 [N]）を追加し、plan() の最後で毎周期publishするようにした。
+
+  Python側は、これをsubscribeして self.gimbal1_thrust に保持する。
+  ASK_TRY1_DIRECTION の質問表示の直後（'a'/'b' の入力待ちに入る前）
+  に、現在取得できているλ1の値を [debug] として表示する機能を追加した。
+  これは今後の反トルク計算・フィードフォワード補正の実装に向けた、
+  値の取得確認のためのステップである。
+
+  なお、C++側の変更点は「fixed_gimbal_thrust トピックの追加」のみ
+  であり、既存の最適化ロジック・fixed_gimbal_cmd/fixed_gimbal_state
+  のインターフェースには一切手を入れていない。
 
 --------------------------------------------------------------------------
 rev.25 での変更（rev.24 からの差分）— joint1変形前のgimbal1選択を再修正
@@ -336,6 +359,10 @@ class GimbalFixedSequencer(object):
         self.fix_err     = math.pi
         self.fix_state_received = False
 
+        # 【rev.26追加】gimbal1（固定対象ロータ）の静的推力λ1 [N]
+        self.gimbal1_thrust = 0.0
+        self.gimbal1_thrust_received = False
+
         self.fix_active = False
 
         self.sweep_mode  = sweep
@@ -376,6 +403,8 @@ class GimbalFixedSequencer(object):
 
         rospy.Subscriber('/hydrus_xi/joint_states', JointState, self._joint_state_cb)
         rospy.Subscriber('/hydrus_xi/fixed_gimbal_state', Float64MultiArray, self._fix_state_cb)
+        # 【rev.26追加】gimbal1（固定対象ロータ）の静的推力λ1 [N]
+        rospy.Subscriber('/hydrus_xi/fixed_gimbal_thrust', Float64, self._thrust_cb)
 
         rospy.loginfo("[Seq] waiting for /hydrus_xi/joint_states ...")
         try:
@@ -430,6 +459,15 @@ class GimbalFixedSequencer(object):
         self.fc_t_min    = msg.data[3]
         self.fix_err     = msg.data[4]
         self.fix_state_received = True
+
+    def _thrust_cb(self, msg):
+        """
+        【rev.26追加】gimbal1（固定対象ロータ）の静的推力λ1 [N] を受信する。
+        C++側 (hydrus_xi_under_actuated_navigation.cpp) の plan() 内で
+        毎周期 publish される fixed_gimbal_thrust トピックを購読する。
+        """
+        self.gimbal1_thrust = msg.data
+        self.gimbal1_thrust_received = True
 
     # ---------------- helpers ----------------
 
@@ -1126,6 +1164,15 @@ def main():
             print("\n変形方向は？")
             print(" a(正の向き): gimbal1 = c*2*pi + pi + %.1f rad に固定（cは現在角basis）" % GIMBAL1_PICK_OFFSET)
             print(" b(負の向き): gimbal1 = c*2*pi + pi - %.1f rad に固定（cは現在角basis）" % GIMBAL1_PICK_OFFSET)
+            # 【rev.26追加】取得できているgimbal1推力λ1をデバッグ表示する。
+            # 反トルク計算・フィードフォワード補正の実装に向けた値の
+            # 取得確認が目的。
+            if seq.gimbal1_thrust_received:
+                print(" [debug] gimbal1 thrust (lambda1) = %.4f N" % seq.gimbal1_thrust)
+                rospy.loginfo("[Seq] try1: gimbal1 thrust (lambda1) = %.4f N", seq.gimbal1_thrust)
+            else:
+                print(" [debug] gimbal1 thrust (lambda1) : 未受信 (fixed_gimbal_thrust topic)")
+                rospy.logwarn("[Seq] try1: gimbal1 thrust (lambda1) not received yet")
             try:
                 s = input("> ").strip().lower()
             except (KeyboardInterrupt, EOFError):

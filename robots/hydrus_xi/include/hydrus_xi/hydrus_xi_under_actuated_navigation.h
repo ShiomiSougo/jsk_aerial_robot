@@ -43,6 +43,7 @@
 
 /* ★ 固定ジンバル指令・状態フィードバック用 */
 #include <std_msgs/Float64MultiArray.h>
+#include <std_msgs/Float64.h>   // ★追加：gimbal1推力(λ1) publish用
 #include <mutex>
 
 namespace aerial_robot_navigation
@@ -120,6 +121,7 @@ namespace aerial_robot_navigation
      */
     ros::Subscriber fix_gimbal_cmd_sub_;    // ~/fixed_gimbal_cmd   [enable, angle]
     ros::Publisher  fix_gimbal_state_pub_;  // ~/fixed_gimbal_state [en, tgt, cur, fc_t_min, err]
+    ros::Publisher  fix_gimbal_thrust_pub_; // ★追加：~/fixed_gimbal_thrust  gimbal1（固定対象ロータ）の静的推力λ1 [N]
 
     boost::shared_ptr<nlopt::opt> vectoring_nl_solver_full_;     // N   次元
     boost::shared_ptr<nlopt::opt> vectoring_nl_solver_reduced_;  // N-1 次元
@@ -142,6 +144,7 @@ namespace aerial_robot_navigation
     double active_fix_angle_;
 
     double last_fc_t_min_;
+    double last_gimbal1_thrust_;   // ★追加：gimbal1（固定対象ロータ）の静的推力λ1 [N]（plan()の最後に算出）
 
     void setupSolver(boost::shared_ptr<nlopt::opt> solver);
     void fixedGimbalCmdCallback(const std_msgs::Float64MultiArray::ConstPtr& msg);

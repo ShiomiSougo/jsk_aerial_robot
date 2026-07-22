@@ -1,10 +1,11 @@
 #include <hydrus_xi/hydrus_xi_under_actuated_navigation.h>
 #include <std_msgs/Float64MultiArray.h>
+#include <std_msgs/Float64.h>   // ★追加：gimbal1推力(λ1) publish用
 
 using namespace aerial_robot_navigation;
 
 /* ============================================================================
- *  【改造の要点】大本のコードからの差分は以下の 3 点のみ。
+ *  【改造の要点】大本のコードからの差分は以下の 4 点。
  *
  *  1) 特定のジンバル（既定 "gimbal1"）を nlopt の最適化変数から外し、
  *     外部から与えた固定角として扱う。最適化次元は N -> N-1 に落ちる。
@@ -14,6 +15,11 @@ using namespace aerial_robot_navigation;
  *
  *  3) Python 側が状態を見て遷移できるよう、固定角の現在値と
  *     feasible control torque min を state トピックで publish する。
+ *
+ *  4) ★追加：gimbal1（固定対象ロータ）の静的推力λ1を、別トピック
+ *     （fixed_gimbal_thrust）として毎周期 publish する。Python側で
+ *     反トルク（プロペラ回転による moment/force rate × λ1）を計算する
+ *     ために必要。
  *
  *  導入しないもの（意図的）:
  *    - 内部モーメント計算（computeExactInternalMoment 相当）
@@ -189,7 +195,8 @@ HydrusXiUnderActuatedNavigator::HydrusXiUnderActuatedNavigator():
     active_fix_enabled_(false),
     active_fix_idx_(-1),
     active_fix_angle_(0.0),
-    last_fc_t_min_(0.0)
+    last_fc_t_min_(0.0),
+    last_gimbal1_thrust_(0.0)   // ★追加
 {
 }
 
@@ -215,6 +222,7 @@ void HydrusXiUnderActuatedNavigator::initialize(ros::NodeHandle nh, ros::NodeHan
   fix_gimbal_cmd_sub_   = nh_.subscribe("fixed_gimbal_cmd", 1,
                                         &HydrusXiUnderActuatedNavigator::fixedGimbalCmdCallback, this);
   fix_gimbal_state_pub_ = nh_.advertise<std_msgs::Float64MultiArray>("fixed_gimbal_state", 1);
+  fix_gimbal_thrust_pub_ = nh_.advertise<std_msgs::Float64>("fixed_gimbal_thrust", 1);  // ★追加：gimbal1推力(λ1)
 
   if(nh.hasParam("control_gimbal_names"))
     {
@@ -494,6 +502,16 @@ bool HydrusXiUnderActuatedNavigator::plan()
       
       last_fc_t_min_ = robot_model_for_plan_->getFeasibleControlTMin();
 
+      /* ★追加: gimbal1（固定対象ロータ）の静的推力λ1を取得しておく。
+       *   applyGimbalAngles() 直後（採用解 x の状態）で読むことで、
+       *   last_fc_t_min_ と同様に「採用解に対応する値」を保証する。 */
+      if(fix_gimbal_idx_ >= 0)
+        {
+          Eigen::VectorXd force_v = robot_model_for_plan_->getStaticThrust();
+          if(fix_gimbal_idx_ < force_v.size())
+            last_gimbal1_thrust_ = force_v(fix_gimbal_idx_);
+        }
+
       if(plan_verbose_)
         {
           double roll, pitch, yaw;
@@ -506,6 +524,7 @@ bool HydrusXiUnderActuatedNavigator::plan()
           for(auto it: opt_gimbal_angles_) std::cout << std::setprecision(5) << it << " ";
           std::cout << ", max min yaw: " << max_min_yaw_;
           std::cout << ", fc t min: " << last_fc_t_min_;
+          std::cout << ", gimbal1 thrust: " << last_gimbal1_thrust_;   // ★追加
           std::cout << ", attitude: [" << roll << ", " << pitch;
           std::cout << "], force: [" << robot_model_for_plan_->getStaticThrust().transpose();
           std::cout << "]" << std::endl;
@@ -541,6 +560,11 @@ bool HydrusXiUnderActuatedNavigator::plan()
   state_msg.data[4] = active_fix_enabled_
                     ? fabs(normalizeAngle(target - active_fix_angle_)) : M_PI;
   fix_gimbal_state_pub_.publish(state_msg);
+
+  /* ---- ★追加: gimbal1（固定対象ロータ）の静的推力λ1を publish ------------- */
+  std_msgs::Float64 thrust_msg;
+  thrust_msg.data = last_gimbal1_thrust_;
+  fix_gimbal_thrust_pub_.publish(thrust_msg);
 
   prev_opt_gimbal_angles_ = opt_gimbal_angles_;
 
