@@ -2,10 +2,29 @@
 # -*- coding: utf-8 -*-
 
 """
-Hydrus-Xi 変形シーケンス（gimbal1 固定・joint1 サーボ駆動版）rev.26
+Hydrus-Xi 変形シーケンス（gimbal1 固定・joint1 サーボ駆動版）rev.27
 
 目的:
   psi_1 (gimbal1 の vectoring 角) を固定したまま joint1 の変形を成立させる。
+
+--------------------------------------------------------------------------
+rev.27 での変更（rev.26 からの差分）— λ1・反モーメント表示を3秒間更新し続けるループに変更
+--------------------------------------------------------------------------
+【背景】rev.26で追加したλ1のデバッグ表示は1回きりの表示だったため、
+  値が変動しているかどうか（定常値に収束しているか）を目視で確認しづらい
+  という課題があった。
+
+【対策】ASK_TRY1_DIRECTIONの質問表示の直後に、gimbal1の推力λ1と、
+  そこから計算される反モーメントの大きさ（|m_f_rate * λ1|）を、
+  約3秒間（0.1秒間隔 x 30回）更新し続けて表示するループを追加した。
+
+  反モーメントの計算に使う m_f_rate は、URDF/motor_infoで確認できた
+  2通りの値（-0.0172, -0.01887）のうち、絶対値が小さい方
+  （GIMBAL1_MF_RATE = 0.0172）を採用する。表示するのは「反モーメントの
+  大きさ」のみなので、符号は付けず絶対値で計算する。
+
+  この変更はPythonファイルのみで完結しており、C++側
+  （hydrus_xi_under_actuated_navigation.cpp/h）への変更は無い。
 
 --------------------------------------------------------------------------
 rev.26 での変更（rev.25 からの差分）— gimbal1推力(λ1)のsubscribe・表示を追加
@@ -339,6 +358,15 @@ JOINT23_PHASE_TIMEOUT = 15.0  # [s] joint2 がこの時間内に到達しなけ�
 
 # ---- 【rev.18追加】gimbal1固定角の新ルールで使う定数 -------------------------
 GIMBAL1_PICK_OFFSET = 0.7  # [rad] pi からのオフセット。a>=0でpi+0.7、a<0でpi-0.7
+# ---------------------------------------------------------------------------
+
+# ---- 【rev.27追加】gimbal1（固定対象ロータ）の反モーメント計算用定数 ----------
+#   moment/force rate (m_f_rate)。URDF/motor_infoで確認できた値は
+#   -0.0172 と -0.01887 の2通りだったが、絶対値が小さい方を採用する。
+#   反モーメントの大きさ = |GIMBAL1_MF_RATE * lambda1| として計算する。
+GIMBAL1_MF_RATE = 0.0172   # [Nm/N] 反モーメント計算用の係数（絶対値）
+REACTION_MOMENT_DISPLAY_DURATION = 3.0   # [s] 表示を更新し続ける時間
+REACTION_MOMENT_DISPLAY_INTERVAL = 0.1   # [s] 表示更新の間隔
 # ---------------------------------------------------------------------------
 
 
@@ -1164,15 +1192,31 @@ def main():
             print("\n変形方向は？")
             print(" a(正の向き): gimbal1 = c*2*pi + pi + %.1f rad に固定（cは現在角basis）" % GIMBAL1_PICK_OFFSET)
             print(" b(負の向き): gimbal1 = c*2*pi + pi - %.1f rad に固定（cは現在角basis）" % GIMBAL1_PICK_OFFSET)
-            # 【rev.26追加】取得できているgimbal1推力λ1をデバッグ表示する。
-            # 反トルク計算・フィードフォワード補正の実装に向けた値の
-            # 取得確認が目的。
+
+            # 【rev.27】取得できているgimbal1推力λ1と、そこから計算される
+            # 反モーメントの大きさ（|GIMBAL1_MF_RATE * lambda1|）を、
+            # 約3秒間、更新し続けて表示する。値が定常的かどうかを目視で
+            # 確認できるようにするための表示（rev.26では1回きりだった）。
+            print(" [debug] gimbal1 の推力・反モーメントを %.0f 秒間表示します..."
+                  % REACTION_MOMENT_DISPLAY_DURATION)
+            n_updates = int(REACTION_MOMENT_DISPLAY_DURATION / REACTION_MOMENT_DISPLAY_INTERVAL)
+            for _ in range(n_updates):
+                if seq.gimbal1_thrust_received:
+                    thrust = seq.gimbal1_thrust
+                    reaction_moment = abs(GIMBAL1_MF_RATE * thrust)
+                    print(" プロペラ推力: %.4f N   反モーメント: %.4f Nm" % (thrust, reaction_moment))
+                else:
+                    print(" プロペラ推力: 未受信 (fixed_gimbal_thrust topic)")
+                rospy.sleep(REACTION_MOMENT_DISPLAY_INTERVAL)
+
             if seq.gimbal1_thrust_received:
-                print(" [debug] gimbal1 thrust (lambda1) = %.4f N" % seq.gimbal1_thrust)
-                rospy.loginfo("[Seq] try1: gimbal1 thrust (lambda1) = %.4f N", seq.gimbal1_thrust)
+                rospy.loginfo("[Seq] try1: gimbal1 thrust (lambda1) = %.4f N, "
+                              "reaction moment = %.4f Nm (m_f_rate=%.4f)",
+                              seq.gimbal1_thrust, abs(GIMBAL1_MF_RATE * seq.gimbal1_thrust),
+                              GIMBAL1_MF_RATE)
             else:
-                print(" [debug] gimbal1 thrust (lambda1) : 未受信 (fixed_gimbal_thrust topic)")
                 rospy.logwarn("[Seq] try1: gimbal1 thrust (lambda1) not received yet")
+
             try:
                 s = input("> ").strip().lower()
             except (KeyboardInterrupt, EOFError):
