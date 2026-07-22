@@ -2,10 +2,48 @@
 # -*- coding: utf-8 -*-
 
 """
-Hydrus-Xi 変形シーケンス（gimbal1 固定・joint1 サーボ駆動版）rev.31
+Hydrus-Xi 変形シーケンス（gimbal1 固定・joint1 サーボ駆動版）rev.32
 
 目的:
   psi_1 (gimbal1 の vectoring 角) を固定したまま joint1 の変形を成立させる。
+
+--------------------------------------------------------------------------
+rev.32 での変更（rev.31 からの差分）— モーメントアームの誤り修正（LINK_LENGTH→GIMBAL_ARM）
+--------------------------------------------------------------------------
+【発見】モードc（釣り合い角）で試行したところ、joint1は静止せず、
+  一定方向に動き続けてjoint1の可動範囲の上限（1.57 rad ≈ 90deg、
+  hydrus_xi_link.xacroのjoint${self}のupper limit）まで到達した。
+
+  原因を調べたところ、推力モーメントの計算式
+
+    推力モーメント(θ) = thrust * LINK_LENGTH * sin(BETA) * sin(θ)
+
+  で使っていた LINK_LENGTH(=0.6m) は、joint1からgimbal1までの
+  実際のモーメントアームではなかった。hydrus_xi_link.xacroの
+  gimbal${self}関節のorigin (xyz="0.3016 0 0.05967") から、実際の
+  モーメントアームは LINK_LENGTH の半分（≈0.3016 ≈ 0.3）であることが
+  分かった。rev.31まではLINK_LENGTHをそのままdとして使っており、
+  推力モーメントを実際の約2倍に見積もっていた。
+
+  なお、反モーメントの計算式（GIMBAL1_MF_RATE * thrust * cos(BETA)）
+  自体はjoint1軸(z軸)方向の射影であり、gimbal関節の回転(ψ1)による
+  z軸まわりの回転はz成分を変えないため、θに依存しないという近似は
+  物理的に正しかった（この点は誤って一度「θ依存のはず」と訂正した
+  経緯があったが、URDFの関節連鎖を辿った結果、rev.31時点の実装は
+  正しかったことを確認した）。
+
+  推力モーメントの過大評価により、theta_balanceの値自体もズレて
+  いた可能性が高い。また、この静的モデルには本質的にq1に対する
+  復元力が存在しない（tau_1(theta)はq1に依存しない定数式のため）ため、
+  わずかな誤差でも一方向に流れ続けjoint1可動範囲の限界に達しうる、
+  という構造的な脆弱性も合わせて確認された。
+
+【修正】GIMBAL_ARM = LINK_LENGTH / 2.0 という定数を新設し、
+  推力モーメントの計算・THETA_BALANCEの計算の両方で、LINK_LENGTHの
+  代わりにGIMBAL_ARMを使うよう修正した。LINK_LENGTH自体は
+  「リンクの長さ」という物理的な意味のまま残し、GIMBAL_ARMを
+  「joint1からgimbal1までの実際のモーメントアーム」として明示的に
+  分離した。
 
 --------------------------------------------------------------------------
 rev.31 での変更（rev.30 からの差分）— モードcの3秒待機タイミングの修正
@@ -471,19 +509,31 @@ GIMBAL1_PICK_OFFSET = 0.7  # [rad] pi からのオフセット。a>=0でpi+0.7�
 #   GIMBAL1_MF_RATE も同ファイルの m_f_rate (MN4010KV475_Afro_15inch) と同じ値。
 #   rev.26/27で用いていた 0.0172 は別パッケージ（hydrus、無印）の値であり誤りだった。
 BETA = 0.34906585039       # [rad] thrust_tilt_angle (20deg)
-LINK_LENGTH = 0.6          # [m] link_length
-GIMBAL1_MF_RATE = -0.0182   # [Nm/N] m_f_rate（Hydrus-Xi, MN4010KV475_Afro_15inch）
+LINK_LENGTH = 0.6          # [m] link_length（hydrus_xi_common.xacro.xacroのlink_length）
+
+# ---- 【rev.32追加】モーメントアーム d の修正 -------------------------------
+#   推力モーメントの計算に使うべきモーメントアームは LINK_LENGTH そのもの
+#   ではなく、gimbal関節の実際の取付位置。hydrus_xi_link.xacroで確認した
+#   gimbal${self}関節のoriginは xyz="0.3016 0 0.05967" であり、これは
+#   ほぼ LINK_LENGTH/2（=0.3）に一致する。rev.31まではLINK_LENGTHを
+#   そのままdとして使っており、モーメントアームを実際の約2倍に
+#   見積もっていた誤りがあった。
+GIMBAL_ARM = LINK_LENGTH / 2.0   # [m] gimbal関節の取付位置（≈0.3016の近似値、joint1軸からの距離）
+# ---------------------------------------------------------------------------
+GIMBAL1_MF_RATE = 0.0182   # [Nm/N] m_f_rate（Hydrus-Xi, MN4010KV475_Afro_15inch）
 REACTION_MOMENT_DISPLAY_DURATION = 3.0   # [s] 推力λ1をサンプリングし平均する時間（表示用、rev.29時点で釣り合い角計算には不使用）
 REACTION_MOMENT_DISPLAY_INTERVAL = 0.1   # [s] サンプリング間隔
 
 # ---- 【rev.30追加】推力モーメントと反モーメントの釣り合い角 theta_balance -------
 #   推力モーメント(θ) = 反モーメント となる θ を解析的に解く:
-#     lambda1 * LINK_LENGTH * sin(BETA) * sin(theta) = GIMBAL1_MF_RATE * lambda1 * cos(BETA)
-#     sin(theta) = GIMBAL1_MF_RATE * cos(BETA) / (LINK_LENGTH * sin(BETA))
+#   推力モーメント(θ) = 反モーメント となる θ を解析的に解く:
+#     lambda1 * GIMBAL_ARM * sin(BETA) * sin(theta) = GIMBAL1_MF_RATE * lambda1 * cos(BETA)
+#     sin(theta) = GIMBAL1_MF_RATE * cos(BETA) / (GIMBAL_ARM * sin(BETA))
 #   両辺の lambda1（推力）が約分されるため、theta_balance は推力の大きさに
 #   依存しない（機体形状とプロペラ特性だけで決まる）定数になる。
-#   実測では約 0.0835 rad (約4.78deg) となることを確認済み。
-THETA_BALANCE = math.asin(GIMBAL1_MF_RATE * math.cos(BETA) / (LINK_LENGTH * math.sin(BETA)))
+#   【rev.32修正】モーメントアームを LINK_LENGTH ではなく GIMBAL_ARM
+#   （=LINK_LENGTH/2、gimbal関節の実際の取付位置）に修正した。
+THETA_BALANCE = math.asin(GIMBAL1_MF_RATE * math.cos(BETA) / (GIMBAL_ARM * math.sin(BETA)))
 # ---------------------------------------------------------------------------
 # ---------------------------------------------------------------------------
 
@@ -732,7 +782,7 @@ class GimbalFixedSequencer(object):
     def _print_moment_balance_table(self, thrust):
         """
         gimbal1の推力(thrust=λ1)から、joint1にかかる
-          推力モーメント(θ) = thrust * LINK_LENGTH * sin(BETA) * sin(θ)
+          推力モーメント(θ) = thrust * GIMBAL_ARM * sin(BETA) * sin(θ)
           反モーメント       = GIMBAL1_MF_RATE * thrust * cos(BETA)
                               （プロペラ回転軸の傾き(BETA)分の正射影。
                                θには依存しない定数として近似）
@@ -757,7 +807,7 @@ class GimbalFixedSequencer(object):
         print(" ---------------------------------------------------------------")
         for i in range(n_steps + 1):
             theta = -math.pi / 2.0 + math.pi * i / n_steps
-            lever_moment = thrust * LINK_LENGTH * math.sin(BETA) * math.sin(theta)
+            lever_moment = thrust * GIMBAL_ARM * math.sin(BETA) * math.sin(theta)
             print("  %8.2f     %10.4f          %10.4f" %
                   (math.degrees(theta), lever_moment, reaction_moment))
         print(" ---------------------------------------------------------------")
