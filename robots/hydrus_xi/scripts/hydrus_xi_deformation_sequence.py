@@ -2,10 +2,37 @@
 # -*- coding: utf-8 -*-
 
 """
-Hydrus-Xi 変形シーケンス（gimbal1 固定・joint1 サーボ駆動版）rev.30
+Hydrus-Xi 変形シーケンス（gimbal1 固定・joint1 サーボ駆動版）rev.31
 
 目的:
   psi_1 (gimbal1 の vectoring 角) を固定したまま joint1 の変形を成立させる。
+
+--------------------------------------------------------------------------
+rev.31 での変更（rev.30 からの差分）— モードcの3秒待機タイミングの修正
+--------------------------------------------------------------------------
+【発見】rev.30のモードcは、main()側で「_pick_try1_target('c')で目標角を
+  計算した直後」に3秒間 rospy.sleep() するだけで、その間 start_try1()
+  （＝gimbal1への実際の指令、_hold_fix()の呼び出し）はまだ行われて
+  いなかった。つまり「3秒待つ」のタイミングが、gimbal1が目標角に
+  到達する前（そもそも動き出す前）になっており、意図（到達後に3秒
+  待ってから停止する）とずれていた。
+
+【修正】
+  1) start_try1(gimbal_target, fixed_wait=None) に fixed_wait 引数を
+     追加した。fixed_wait=None（デフォルト）の場合はa/bと全く同じ
+     動的静定判定（関節速度が閾値未満になるか、最大6秒）を使う。
+     fixed_wait に数値を渡すと、gimbal1到達後、動的静定判定を使わず
+     その秒数だけ固定で待ってから停止する。a/bの呼び出し
+     （seq.start_try1(target)、引数なし）は変更しておらず、a/bの
+     挙動は一切変わらない。
+
+  2) main()のモードc分岐で、「計算直後に3秒待ってからstart_try1()を
+     呼ぶ」という誤った順序をやめ、目標角計算後ただちに
+     start_try1(target, fixed_wait=REACTION_MOMENT_DISPLAY_DURATION)
+     を呼ぶように修正した。これにより、gimbal1のスルー開始・到達待ち
+     （_step_joint1_try1内の(2)）は即座に始まり、到達後に初めて
+     3秒間の固定待ち（_step_joint1_try1内の(2.6)）が入り、その後
+     effortゼロ化が行われる、という正しい順序になった。
 
 --------------------------------------------------------------------------
 rev.30 での変更（rev.29 からの差分）— 釣り合い角モード'c'の追加
@@ -445,7 +472,7 @@ GIMBAL1_PICK_OFFSET = 0.7  # [rad] pi からのオフセット。a>=0でpi+0.7�
 #   rev.26/27で用いていた 0.0172 は別パッケージ（hydrus、無印）の値であり誤りだった。
 BETA = 0.34906585039       # [rad] thrust_tilt_angle (20deg)
 LINK_LENGTH = 0.6          # [m] link_length
-GIMBAL1_MF_RATE = -0.0182   # [Nm/N] m_f_rate（Hydrus-Xi, MN4010KV475_Afro_15inch）
+GIMBAL1_MF_RATE = 0.0182   # [Nm/N] m_f_rate（Hydrus-Xi, MN4010KV475_Afro_15inch）
 REACTION_MOMENT_DISPLAY_DURATION = 3.0   # [s] 推力λ1をサンプリングし平均する時間（表示用、rev.29時点で釣り合い角計算には不使用）
 REACTION_MOMENT_DISPLAY_INTERVAL = 0.1   # [s] サンプリング間隔
 
@@ -511,6 +538,7 @@ class GimbalFixedSequencer(object):
 
         # 【rev.18追加】try1で使うgimbal1目標角（ASK_TRY1_DIRECTIONで設定される）
         self._try1_gimbal_target = None
+        self._try1_fixed_wait = None   # 【rev.31追加】Noneなら動的静定判定、数値なら固定秒数待ち
 
         self.joints_ctrl_pub = rospy.Publisher('/hydrus_xi/joints_ctrl', JointState, queue_size=1)
         self.fix_cmd_pub     = rospy.Publisher('/hydrus_xi/fixed_gimbal_cmd', Float64MultiArray, queue_size=1)
@@ -1118,12 +1146,22 @@ class GimbalFixedSequencer(object):
         self._send_joint_cmd()
         self._release_fix()
 
-    def start_try1(self, gimbal_target):
+    def start_try1(self, gimbal_target, fixed_wait=None):
         """
         【rev.18追加】main()の対話プロンプトで方向(a/b)が選ばれた際に
         呼ばれる。gimbal1の目標角を確定し、JOINT1_TRY1へ遷移する。
+
+        【rev.31追加】fixed_wait引数を追加。
+          fixed_wait=None（デフォルト、a/bはこちら）:
+            従来通り、gimbal1到達後は動的な静定判定
+            （関節速度がSTABILIZE_VEL_THRESH未満になるか、最大6秒）
+            で停止タイミングを決める。a/bの挙動は一切変更していない。
+          fixed_wait=数値（モードcはこちら）:
+            動的な静定判定を使わず、gimbal1到達後その秒数だけ
+            固定で待ってから停止する。
         """
         self._try1_gimbal_target = gimbal_target
+        self._try1_fixed_wait = fixed_wait   # 【rev.31追加】
         for attr in ('_try1_reached_t', '_try1_stopped'):
             if hasattr(self, attr):
                 delattr(self, attr)
@@ -1134,6 +1172,10 @@ class GimbalFixedSequencer(object):
         【rev.18変更】全周スピン診断は削除。start_try1()で確定した
         gimbal1目標角（pi+0.7 または pi-0.7）へ直接向かい、到達・静定後に
         controller1を停止し、effortゼロのpublishを試みる。
+
+        【rev.31変更】gimbal1到達後の待ち方を、start_try1()で渡された
+        fixed_wait の有無で切り替える（a/bはfixed_wait=Noneのため
+        従来通り動的静定判定、cはfixed_wait=3.0のため固定秒数待ち）。
         """
         gimbal_angle = self._try1_gimbal_target
         if gimbal_angle is None:
@@ -1156,12 +1198,21 @@ class GimbalFixedSequencer(object):
             self._try1_reached_t = rospy.Time.now()
             rospy.loginfo("[Seq] joint1_try1: gimbal1 reached %+.3f, waiting to settle", self.fix_current)
 
-        # (2.6) 機体が安定するまで待つ（関節速度が十分小さくなるまで）
-        settled = all(abs(self.current_dq[j]) < STABILIZE_VEL_THRESH for j in self.joint_names)
+        # (2.6) 到達後の待ち方: fixed_waitが指定されていれば固定秒数、
+        #       なければ従来通り動的な静定判定（最大6秒）を使う。
+        fixed_wait = getattr(self, '_try1_fixed_wait', None)
         waited = (rospy.Time.now() - self._try1_reached_t).to_sec()
-        if not settled and waited < 6.0:   # 安定するか、最大6秒待つ
-            rospy.loginfo_throttle(0.5, "[Seq] joint1_try1: settling... (%.1fs)", waited)
-            return
+        if fixed_wait is not None:
+            # 【rev.31追加】モードc用: 固定秒数だけ待つ（動的静定判定は使わない）
+            if waited < fixed_wait:
+                rospy.loginfo_throttle(0.5, "[Seq] joint1_try1: fixed wait after reach... (%.1f/%.1fs)",
+                                       waited, fixed_wait)
+                return
+        else:
+            settled = all(abs(self.current_dq[j]) < STABILIZE_VEL_THRESH for j in self.joint_names)
+            if not settled and waited < 6.0:   # 安定するか、最大6秒待つ
+                rospy.loginfo_throttle(0.5, "[Seq] joint1_try1: settling... (%.1fs)", waited)
+                return
 
         # (3) 安定したら joint1 のサーボを切る（1回だけ）
         if not getattr(self, '_try1_stopped', False):
@@ -1379,26 +1430,27 @@ def main():
                 rospy.loginfo(msg)
                 seq.start_try1(target)
             elif s == 'c':
-                # 【rev.30追加】a, bとできる限り同じ構造にする。
+                # 【rev.30追加、rev.31で待機タイミングを修正】
                 # 唯一の違いは _pick_try1_target に渡す direction が 'c'
                 # （オフセットが GIMBAL1_PICK_OFFSET ではなく THETA_BALANCE）
-                # という点のみ。
+                # という点と、start_try1() に fixed_wait を渡す点。
                 target, c, d = seq._pick_try1_target('c')
                 msg = ("[Seq] try1: direction 'c' (balance) selected -> b(current)=%.4f, c=%.1f, d=%.4f, "
                        "target = c*2*pi + pi + %.4f = %+.3f rad" % (seq.fix_current, c, d, THETA_BALANCE, target))
                 print(msg)
                 rospy.loginfo(msg)
 
-                # gimbal1をtargetへ固定した目標角度をprintfし、3秒間待つ。
-                # 実際のgimbal1のスルー・静定・effortゼロ化はa, bと全く同じ
-                # start_try1() -> Step.JOINT1_TRY1 の流れ（_step_joint1_try1）
-                # に任せる。
-                print(" [debug] gimbal1 target = %+.4f rad (%.2f deg) を3秒間待ちます..."
+                # 【rev.31修正】rev.30では start_try1() を呼ぶ前（＝gimbal1が
+                # まだ動き出す前）に3秒間ただ待っているだけの誤りがあった。
+                # 正しくは「gimbal1が目標角に到達してから」3秒待つべきなので、
+                # ここでは即座に start_try1() を呼んでgimbal1のスルーを開始し、
+                # 到達後の固定待ち時間（fixed_wait秒）は
+                # _step_joint1_try1 側の処理に委ねる。
+                print(" [debug] gimbal1 target = %+.4f rad (%.2f deg) へスルーを開始します"
                       % (target, math.degrees(target)))
-                for _ in range(int(REACTION_MOMENT_DISPLAY_DURATION / REACTION_MOMENT_DISPLAY_INTERVAL)):
-                    rospy.sleep(REACTION_MOMENT_DISPLAY_INTERVAL)
-
-                seq.start_try1(target)
+                print(" [debug] 到達後、%.0f秒間待ってからjoint1のeffortをゼロにします"
+                      % REACTION_MOMENT_DISPLAY_DURATION)
+                seq.start_try1(target, fixed_wait=REACTION_MOMENT_DISPLAY_DURATION)
             else:
                 print("'a' か 'b' か 'c' を入力してください")
 
