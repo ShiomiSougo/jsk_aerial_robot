@@ -666,7 +666,7 @@ class GimbalFixedSequencer(object):
         db = abs(self._norm(cand['b'] - psi_now))
         return ['a', 'b'] if da <= db else ['b', 'a']
 
-    # ---- 【rev.28追加】推力モーメント・反モーメントの釣り合いテーブル表示 -------
+    # ---- 【rev.29修正】推力モーメント・反モーメントの釣り合いテーブル表示 -------
     def _print_moment_balance_table(self, thrust):
         """
         gimbal1の推力(thrust=λ1)から、joint1にかかる
@@ -674,17 +674,27 @@ class GimbalFixedSequencer(object):
           反モーメント       = GIMBAL1_MF_RATE * thrust * cos(BETA)
                               （プロペラ回転軸の傾き(BETA)分の正射影。
                                θには依存しない定数として近似）
-        を、θ(gimbal1のオフセット角)を 0 ~ pi/2 の範囲で振りながら
+        を、θ(gimbal1のオフセット角)を -pi/2 ~ +pi/2 の範囲で振りながら
         一覧表示する。反モーメントはjoint1の角度を減らす方向にはたらく
-        前提のもと、推力モーメントと反モーメントの大小が入れ替わる
+        前提のもと、推力モーメントと反モーメントの大小・符号が入れ替わる
         付近のθが、つり合い角の目安になる。
+
+        【rev.29修正】
+        - モジュールレベル定数 THETA_SWEEP_STEPS への依存をやめ、
+          メソッド内のローカル定数 n_steps とした（実行時に
+          NameError: name 'THETA_SWEEP_STEPS' is not defined が
+          発生したため。原因はモジュール側の定義漏れ・ファイル不整合と
+          推測されるが、メソッド単体で完結させることで再発を防ぐ）。
+        - 探索範囲を 0~pi/2 から -pi/2~+pi/2 に拡張した。
         """
+        n_steps = 36   # -pi/2 ~ +pi/2 をこの数で分割して一覧表示する（5deg刻み相当）
+
         reaction_moment = GIMBAL1_MF_RATE * thrust * math.cos(BETA)
         print(" ---------------------------------------------------------------")
         print("  theta[deg]   推力モーメント[Nm]   反モーメント[Nm]")
         print(" ---------------------------------------------------------------")
-        for i in range(THETA_SWEEP_STEPS + 1):
-            theta = (math.pi / 2.0) * i / THETA_SWEEP_STEPS
+        for i in range(n_steps + 1):
+            theta = -math.pi / 2.0 + math.pi * i / n_steps
             lever_moment = thrust * LINK_LENGTH * math.sin(BETA) * math.sin(theta)
             print("  %8.2f     %10.4f          %10.4f" %
                   (math.degrees(theta), lever_moment, reaction_moment))
