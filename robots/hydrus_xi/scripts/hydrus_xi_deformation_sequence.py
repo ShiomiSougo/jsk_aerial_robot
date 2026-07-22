@@ -472,7 +472,7 @@ GIMBAL1_PICK_OFFSET = 0.7  # [rad] pi からのオフセット。a>=0でpi+0.7�
 #   rev.26/27で用いていた 0.0172 は別パッケージ（hydrus、無印）の値であり誤りだった。
 BETA = 0.34906585039       # [rad] thrust_tilt_angle (20deg)
 LINK_LENGTH = 0.6          # [m] link_length
-GIMBAL1_MF_RATE = 0.0182   # [Nm/N] m_f_rate（Hydrus-Xi, MN4010KV475_Afro_15inch）
+GIMBAL1_MF_RATE = -0.0182   # [Nm/N] m_f_rate（Hydrus-Xi, MN4010KV475_Afro_15inch）
 REACTION_MOMENT_DISPLAY_DURATION = 3.0   # [s] 推力λ1をサンプリングし平均する時間（表示用、rev.29時点で釣り合い角計算には不使用）
 REACTION_MOMENT_DISPLAY_INTERVAL = 0.1   # [s] サンプリング間隔
 
