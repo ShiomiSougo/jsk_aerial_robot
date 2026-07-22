@@ -2,10 +2,64 @@
 # -*- coding: utf-8 -*-
 
 """
-Hydrus-Xi 変形シーケンス（gimbal1 固定・joint1 サーボ駆動版）rev.27
+Hydrus-Xi 変形シーケンス（gimbal1 固定・joint1 サーボ駆動版）rev.29
 
 目的:
   psi_1 (gimbal1 の vectoring 角) を固定したまま joint1 の変形を成立させる。
+
+--------------------------------------------------------------------------
+rev.29 での変更（rev.28 からの差分）— θスイープ表示をarcsinによる逆算に変更
+--------------------------------------------------------------------------
+【背景】rev.28まではθ=0~pi/2を離散的に振って推力モーメント・反モーメントを
+  一覧表示し、目視でつり合い点を探す方式だった。これを、つり合い条件
+    推力モーメント(θ) = 反モーメント
+    thrust * LINK_LENGTH * sin(BETA) * sin(θ) = GIMBAL1_MF_RATE * thrust * cos(BETA)
+  を θ について直接解く方式に変更する。
+
+  sin(θ) = (GIMBAL1_MF_RATE * cos(BETA)) / (LINK_LENGTH * sin(BETA))
+         ※ thrust は両辺に共通のため約分され、つり合い角θはthrustに
+           依存しない定数になる。
+
+【対策】上式の右辺（sin_theta_targetと呼ぶ）を計算し、
+  -1 <= sin_theta_target <= 1 の場合のみ arcsin で解を求める。
+  arcsin の主値域は [-pi/2, pi/2] であり、sin_theta_target >= 0 の場合は
+  主値がそのまま [0, pi/2] に収まるため、0~pi/2の範囲内かどうかの判定は
+  「sin_theta_targetが[0,1]に収まっているか」の確認のみでよい。
+  範囲外（sin_theta_targetが1を超える、または負の場合）は
+  「0~pi/2の範囲内に解が存在しない」旨を表示する。
+
+  この計算はthrustに依存しないため、rev.28のような3秒間のサンプリングは
+  不要になった。ただし推力λ1自体は今後の反トルク補償等でも使うため、
+  表示用としてサンプリング処理はそのまま残す。
+
+--------------------------------------------------------------------------
+rev.28 での変更（rev.27 からの差分）— 推力モーメント・反モーメントをθ=0~π/2で一覧表示
+--------------------------------------------------------------------------
+【背景】rev.27まではλ1（推力）と反モーメントの大きさのみをリアルタイムに
+  表示していたが、joint1のつり合い角θ（gimbal1のオフセット角）を検討
+  するには、θを変化させたときに「推力モーメント（てこ効果）」が
+  「反モーメント（プロペラ回転による抗力トルクの正射影）」と釣り合う
+  点を目視で確認したい。
+
+【対策】以下の物理式に基づき、θ を 0 ~ π/2 の範囲で振りながら、
+  推力モーメント・反モーメント・θ の3つを一覧表示するテーブルに変更した。
+
+    推力モーメント(θ) = 推力 * LINK_LENGTH * sin(BETA) * sin(θ)
+    反モーメント       = GIMBAL1_MF_RATE * 推力 * cos(BETA)
+                        （プロペラ回転軸の傾き(BETA)分の正射影。
+                         θには依存しない定数として近似する）
+
+  反モーメントはjoint1の角度を減らす方向にはたらく前提のもと、
+  推力モーメントと反モーメントの大小が入れ替わる付近のθが、
+  つり合い角の目安になる。
+
+  また、GIMBAL1_MF_RATE を Hydrus-Xi 専用の値（0.0182、
+  hydrus_xi_common.xacro.xacro の m_f_rate、MN4010KV475_Afro_15inch）に
+  修正した。rev.26/27で用いていた 0.0172 は、別パッケージ
+  （hydrus、無印）の値であり誤りだった。
+
+  推力の値は、rev.27までと同様に fixed_gimbal_thrust トピックから
+  3秒間サンプリングし、その平均値を用いる。
 
 --------------------------------------------------------------------------
 rev.27 での変更（rev.26 からの差分）— λ1・反モーメント表示を3秒間更新し続けるループに変更
@@ -360,13 +414,16 @@ JOINT23_PHASE_TIMEOUT = 15.0  # [s] joint2 がこの時間内に到達しなけ�
 GIMBAL1_PICK_OFFSET = 0.7  # [rad] pi からのオフセット。a>=0でpi+0.7、a<0でpi-0.7
 # ---------------------------------------------------------------------------
 
-# ---- 【rev.27追加】gimbal1（固定対象ロータ）の反モーメント計算用定数 ----------
-#   moment/force rate (m_f_rate)。URDF/motor_infoで確認できた値は
-#   -0.0172 と -0.01887 の2通りだったが、絶対値が小さい方を採用する。
-#   反モーメントの大きさ = |GIMBAL1_MF_RATE * lambda1| として計算する。
-GIMBAL1_MF_RATE = 0.0172   # [Nm/N] 反モーメント計算用の係数（絶対値）
-REACTION_MOMENT_DISPLAY_DURATION = 3.0   # [s] 表示を更新し続ける時間
-REACTION_MOMENT_DISPLAY_INTERVAL = 0.1   # [s] 表示更新の間隔
+# ---- 【rev.28修正、rev.29でTHETA_SWEEP_STEPS削除】gimbal1のつり合い角計算用定数 ----
+#   BETA, LINK_LENGTH は hydrus_xi_common.xacro.xacro（Hydrus-Xi専用の共通設定）の
+#   thrust_tilt_angle, link_length と同じ値。
+#   GIMBAL1_MF_RATE も同ファイルの m_f_rate (MN4010KV475_Afro_15inch) と同じ値。
+#   rev.26/27で用いていた 0.0172 は別パッケージ（hydrus、無印）の値であり誤りだった。
+BETA = 0.34906585039       # [rad] thrust_tilt_angle (20deg)
+LINK_LENGTH = 0.6          # [m] link_length
+GIMBAL1_MF_RATE = 0.0182   # [Nm/N] m_f_rate（Hydrus-Xi, MN4010KV475_Afro_15inch）
+REACTION_MOMENT_DISPLAY_DURATION = 3.0   # [s] 推力λ1をサンプリングし平均する時間（表示用、rev.29時点で釣り合い角計算には不使用）
+REACTION_MOMENT_DISPLAY_INTERVAL = 0.1   # [s] サンプリング間隔
 # ---------------------------------------------------------------------------
 
 
@@ -608,6 +665,32 @@ class GimbalFixedSequencer(object):
         da = abs(self._norm(cand['a'] - psi_now))
         db = abs(self._norm(cand['b'] - psi_now))
         return ['a', 'b'] if da <= db else ['b', 'a']
+
+    # ---- 【rev.28追加】推力モーメント・反モーメントの釣り合いテーブル表示 -------
+    def _print_moment_balance_table(self, thrust):
+        """
+        gimbal1の推力(thrust=λ1)から、joint1にかかる
+          推力モーメント(θ) = thrust * LINK_LENGTH * sin(BETA) * sin(θ)
+          反モーメント       = GIMBAL1_MF_RATE * thrust * cos(BETA)
+                              （プロペラ回転軸の傾き(BETA)分の正射影。
+                               θには依存しない定数として近似）
+        を、θ(gimbal1のオフセット角)を 0 ~ pi/2 の範囲で振りながら
+        一覧表示する。反モーメントはjoint1の角度を減らす方向にはたらく
+        前提のもと、推力モーメントと反モーメントの大小が入れ替わる
+        付近のθが、つり合い角の目安になる。
+        """
+        reaction_moment = GIMBAL1_MF_RATE * thrust * math.cos(BETA)
+        print(" ---------------------------------------------------------------")
+        print("  theta[deg]   推力モーメント[Nm]   反モーメント[Nm]")
+        print(" ---------------------------------------------------------------")
+        for i in range(THETA_SWEEP_STEPS + 1):
+            theta = (math.pi / 2.0) * i / THETA_SWEEP_STEPS
+            lever_moment = thrust * LINK_LENGTH * math.sin(BETA) * math.sin(theta)
+            print("  %8.2f     %10.4f          %10.4f" %
+                  (math.degrees(theta), lever_moment, reaction_moment))
+        print(" ---------------------------------------------------------------")
+        rospy.loginfo("[Seq] try1: moment balance table printed (thrust=%.4f N, "
+                      "reaction_moment=%.4f Nm)", thrust, reaction_moment)
 
     # ---- 【rev.18追加、rev.20で符号修正、rev.25で再修正】gimbal1固定角の新ルール ----
     def _pick_gimbal1_target(self):
@@ -1193,29 +1276,30 @@ def main():
             print(" a(正の向き): gimbal1 = c*2*pi + pi + %.1f rad に固定（cは現在角basis）" % GIMBAL1_PICK_OFFSET)
             print(" b(負の向き): gimbal1 = c*2*pi + pi - %.1f rad に固定（cは現在角basis）" % GIMBAL1_PICK_OFFSET)
 
-            # 【rev.27】取得できているgimbal1推力λ1と、そこから計算される
-            # 反モーメントの大きさ（|GIMBAL1_MF_RATE * lambda1|）を、
-            # 約3秒間、更新し続けて表示する。値が定常的かどうかを目視で
-            # 確認できるようにするための表示（rev.26では1回きりだった）。
-            print(" [debug] gimbal1 の推力・反モーメントを %.0f 秒間表示します..."
+            # 【rev.28】gimbal1推力λ1を約3秒間サンプリングして平均を取り、
+            # その平均推力を使って、θ(gimbal1のオフセット角)=0~pi/2の
+            # 推力モーメント・反モーメント一覧テーブルを表示する。
+            # 反モーメントはjoint1の角度を減らす方向にはたらく前提。
+            print(" [debug] gimbal1推力を %.0f 秒間サンプリングします..."
                   % REACTION_MOMENT_DISPLAY_DURATION)
-            n_updates = int(REACTION_MOMENT_DISPLAY_DURATION / REACTION_MOMENT_DISPLAY_INTERVAL)
-            for _ in range(n_updates):
+            n_samples = int(REACTION_MOMENT_DISPLAY_DURATION / REACTION_MOMENT_DISPLAY_INTERVAL)
+            thrust_samples = []
+            for _ in range(n_samples):
                 if seq.gimbal1_thrust_received:
-                    thrust = seq.gimbal1_thrust
-                    reaction_moment = abs(GIMBAL1_MF_RATE * thrust)
-                    print(" プロペラ推力: %.4f N   反モーメント: %.4f Nm" % (thrust, reaction_moment))
+                    thrust_samples.append(seq.gimbal1_thrust)
+                    print(" プロペラ推力: %.4f N" % seq.gimbal1_thrust)
                 else:
-                    print(" プロペラ推力: 未受信 (fixed_gimbal_thrust topic)")
+                    print(" プロペラ推力: 未受信")
                 rospy.sleep(REACTION_MOMENT_DISPLAY_INTERVAL)
 
-            if seq.gimbal1_thrust_received:
-                rospy.loginfo("[Seq] try1: gimbal1 thrust (lambda1) = %.4f N, "
-                              "reaction moment = %.4f Nm (m_f_rate=%.4f)",
-                              seq.gimbal1_thrust, abs(GIMBAL1_MF_RATE * seq.gimbal1_thrust),
-                              GIMBAL1_MF_RATE)
+            if thrust_samples:
+                avg_thrust = sum(thrust_samples) / len(thrust_samples)
+                print(" [debug] 平均推力 = %.4f N（サンプル数 %d）" % (avg_thrust, len(thrust_samples)))
+                seq._print_moment_balance_table(avg_thrust)
+                rospy.loginfo("[Seq] try1: avg thrust = %.4f N (n=%d)", avg_thrust, len(thrust_samples))
             else:
-                rospy.logwarn("[Seq] try1: gimbal1 thrust (lambda1) not received yet")
+                print(" [debug] 推力サンプルが1件も取得できませんでした（fixed_gimbal_thrust 未受信）")
+                rospy.logwarn("[Seq] try1: no thrust samples received")
 
             try:
                 s = input("> ").strip().lower()
